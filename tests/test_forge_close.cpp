@@ -50,12 +50,18 @@ void forge_imgui_run(void *, int which) {
 bool chat_composing(char *, size_t) { return false; }
 void chat_position(float *, float *) {}
 void chat_set_box(float, float, float, float) {}
+bool voice_sending(void) { return false; }
+int voice_talking(void) { return 0; }
+int voice_speakers(uint32_t *, int) { return 0; }
+bool voice_player_name(uint32_t, char[33]) { return false; }
+void voice_own_name(char out[33]) { out[0] = 0; }
 bool perfstats_visible(void) { return false; }
 void perfstats_draw(float, float) {}
 bool touch_drawn(void) { return false; }
 void touch_draw(float, float) {}
 int config_language(void) { return 0; }
 int config_live_menu_confirm(void) { return MENU_CONFIRM_ORIGINAL; }
+int act_menu_confirm_policy(void) { return -1; }
 int config_show_battery(void) { return BATTERY_OFF; }
 bool config_show_fps(void) { return false; }
 Uint64 SDL_GetTicksNS(void) { return test_ticks; }

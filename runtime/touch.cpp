@@ -126,7 +126,7 @@ const Def DEFS[C_COUNT] = {
     // the dodge in the corner, the ammo arrows beside the item bar
     {"fire", "Fire / shoot", I_SHOT, "", 0, true, .215f, .26f, .115f},
     {"second", "Reload / melee", I_RELOAD, "", 0, true, .365f, .13f, .07f},
-    {"aim", "R", I_LETTER, "R", B(BTN_R), true, .415f, .29f, .07f},
+    {"aim", "R", I_SCOPE, "R", B(BTN_R), true, .415f, .29f, .07f},
     {"rspecial", "Crouching fire / coating", I_CROUCH, "", 0, true, .33f, .445f, .058f},
     {"rdodge", "Dodge  B", I_DODGE, "B", B(BTN_B), true, .085f, .10f, .056f},
     {"rsheathe", "Sheathe  Y", I_SHEATHE, "Y", B(BTN_Y), true, .175f, .47f, .046f},
@@ -160,7 +160,7 @@ const char *const PROFILE_NAME[TOUCH_WEAPON_LAYOUTS] = {"Great Sword", "Sword & 
                                                         "Light Bowgun", "Long Sword", "Switch Axe", "Gunlance", "Bow",
                                                         "Dual Blades", "Hunting Horn", "Insect Glaive", "Charge Blade", "Prowler"};
 const char *const LEGACY_NAME[TOUCH_LEGACY_LAYOUTS] = {"Melee layout 1", "Melee layout 2", "Melee layout 3", "Ranged layout"};
-const int UNIVERSAL_LAYOUT = TOUCH_LAYOUT_PROFILES;
+const int UNIVERSAL_LAYOUT = TOUCH_UNIVERSAL_PROFILE;
 const int RESERVED_LAYOUT_BASE = UNIVERSAL_LAYOUT + 1, RESERVED_LAYOUT_COUNT = 4;
 const int LAYOUT_SLOTS = RESERVED_LAYOUT_BASE + RESERVED_LAYOUT_COUNT;
 bool available_layout(int profile) {
@@ -193,7 +193,7 @@ int ranged_profile(int profile) {
 int legacy_ranged_profile(int mode) { return mode == 3 ? WEAPON_BOWGUN : 0; }
 int legacy_style(int mode) { return mode < STYLE_COUNT ? mode : STYLE_PILL; }
 int ranged_layout_profile(int profile) {
-    if (profile >= TOUCH_WEAPON_LAYOUTS && profile < TOUCH_LAYOUT_PROFILES)
+    if (profile >= TOUCH_WEAPON_LAYOUTS && profile < TOUCH_UNIVERSAL_PROFILE)
         return config_live_touch_show(TB_RANGED) ? legacy_ranged_profile(profile - TOUCH_WEAPON_LAYOUTS) : 0;
     return config_live_touch_show(TB_RANGED) ? ranged_profile(profile) : 0;
 }
@@ -235,11 +235,12 @@ bool is_dpad(int i) { return i == C_DPAD || i == C_HDPAD; }
 bool classic_control(int i) {
     return i == C_HEAVY || i == C_LIGHT || i == C_DODGE || i == C_SHEATHE || i == C_R || i == C_L ||
            i == C_ZL || i == C_ZR || i == C_MENU || i == C_HMINUS || i == C_MAP || i == C_R3 ||
-           i == C_HDPAD || i == C_DPAD_TOGGLE || i == C_STICK || i == C_SETTINGS;
+           i == C_HDPAD || i == C_DPAD_TOGGLE || i == C_STICK || i == C_SETTINGS || is_combo(i);
 }
 bool in_mode(int i, bool menu, bool in_quest, int ranged = -1) {
     int show = show_setting(i);
     if (show >= 0 && !config_live_touch_show(show)) return false;
+    if (is_combo(i)) return config_live_touch_combo(config_live_touch_profile(), i - C_COMBO) != 0;
     if (g_style.load() == STYLE_CLASSIC) return classic_control(i);
     if (i == C_RSTICK) return false;
     if (ranged < 0) ranged = g_ranged.load();
@@ -261,7 +262,6 @@ bool in_mode(int i, bool menu, bool in_quest, int ranged = -1) {
     if (is_ranged(i) ? !ranged : ranged && (i == C_ATTACK || i == C_HEAVY || i == C_LIGHT || i == C_CORNER ||
                                                               i == C_DODGE || i == C_SHEATHE))
         return false;
-    if (is_combo(i)) return config_live_touch_combo(config_live_touch_profile(), i - C_COMBO) != 0;
     int style = g_style.load();
     if (i == C_ATTACK) return style == STYLE_PILL || (style == STYLE_CORNER && !config_live_touch_show(TB_GUARD));
     if (i == C_HEAVY || i == C_LIGHT) return style == STYLE_SEPARATE;
@@ -272,9 +272,9 @@ bool in_mode(int i, bool menu, bool in_quest, int ranged = -1) {
 bool in_editor(int i, bool in_quest, int profile) {
     if (profile < 0) return false;
     if (i == C_HDPAD) return config_live_touch_controls() != TOUCH_OFF && config_live_touch_show(TB_DPAD);
+    if (is_combo(i)) return config_live_touch_combo(profile, i - C_COMBO) != 0;
     if (g_style.load() == STYLE_CLASSIC) return in_mode(i, false, in_quest, 0);
     if (i == C_LAYOUT) return !in_quest && profile >= TOUCH_WEAPON_LAYOUTS;
-    if (is_combo(i)) return config_live_touch_combo(profile, i - C_COMBO) != 0;
     return in_mode(i, false, in_quest, ranged_layout_profile(profile));
 }
 const ImVec2 PILL_U(.766f, -.643f);  // the pill's axis on the screen (y down): up and to the right
@@ -911,7 +911,6 @@ void load_selected_layout(State &s, int profile) {
     // Editor previews must not change the controller's active per-weapon combo bindings.
     if (!s.edit) {
         int logical = control_profile(s);
-        if (logical == UNIVERSAL_LAYOUT) logical = profile_for_weapon(s.detected_weapon);
         if (logical >= 0 && logical < TOUCH_LAYOUT_PROFILES) config_set_touch_profile(logical);
     }
     s.saved = s.layout;
@@ -2606,7 +2605,8 @@ void control(ImDrawList *dl, ImFont *font, const Layout &l, int i, float w, floa
         return;
     }
     if (is_dpad(i)) { dpad(dl, g, mask, a); return; }
-    if ((l.style == STYLE_CLASSIC && DEFS[i].buttons) || DEFS[i].icon == I_LETTER || DEFS[i].icon == I_COMBO) {
+    bool scope_r = i == C_RAIM;
+    if (!scope_r && ((l.style == STYLE_CLASSIC && DEFS[i].buttons) || DEFS[i].icon == I_LETTER || DEFS[i].icon == I_COMBO)) {
         char label[32];
         if (is_combo(i)) combo_label(i, control_profile(s), label, sizeof label);
         else if (i == C_LAYOUT)
@@ -2624,11 +2624,11 @@ void control(ImDrawList *dl, ImFont *font, const Layout &l, int i, float w, floa
     disc(dl, g.c, r, mask != 0, a);
     if (i == C_RUN && s.run) dl->AddCircle(g.c, g.r * 1.16f, fade(GLOW, a * (.6f + .3f * sinf(SDL_GetTicksNS() / 1e9f * 4))), 40, g.r * .09f);
     if (i == C_L && s.lock) dl->AddCircle(g.c, g.r * 1.16f, fade(GLOW, a * (.6f + .3f * sinf(SDL_GetTicksNS() / 1e9f * 4))), 40, g.r * .09f);
-    Icon ic = DEFS[i].icon;
+    Icon ic = scope_r ? I_SCOPE : DEFS[i].icon;
     char letter[8];
     snprintf(letter, sizeof letter, "%s", DEFS[i].letter);
     if (is_ranged(i)) ranged_face(i, ranged_layout_profile(control_profile(s)), s.edit ? 1 : s.drawn, &ic, letter, sizeof letter);
-    icon(dl, ic, g.c, i == C_RFIRE ? r * .94f : r, fade(mask ? GLOW : INK, a), fade(DEEP, a));
+    icon(dl, ic, g.c, i == C_RFIRE ? r * .94f : r, fade(mask ? GLOW : scope_r ? GOLD : INK, a), fade(DEEP, a));
     float br = std::max(r * (i == C_RFIRE ? .22f : .3f), .021f * h);  // (the large one's as large as the others')
     badge(dl, font, ImVec2(g.c.x + r * .7f, g.c.y + r * .7f), br, letter, a);
 }

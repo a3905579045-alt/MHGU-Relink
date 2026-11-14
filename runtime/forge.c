@@ -1460,11 +1460,21 @@ static bool env_level;  // MHGU_FORGE_LOG names a level
 static void trace(const char *msg) { LOG("[forge] [DEBUG] %s\n", msg); }
 
 // The ImGui overlay and the log, with Forge's settings (its config.ini: [menu] key / font_size, [log] level) and font
-// where a mod has them (Forge's own files: romfs nativeNX/forge/; the topmost layer that has the file wins), else
-// Forge's defaults (info, 12 px; the menu key Insert) and ImGui's font. A level that is not a name is the lowest one
-// (Forge keeps its start-up level, error). MHGU_FORGE_LOG, when it names a level, picks it over the file.
+// where a mod has them (Forge's own files: romfs nativeNX/forge/; the topmost layer that has the file wins), then
+// Android's bundled Forge files, else Forge's defaults (info, 12 px; Insert) and ImGui's font. An unknown level is
+// the lowest one (Forge keeps its start-up level, error). MHGU_FORGE_LOG, when it names a level, picks it over the file.
 static void overlay_start(const char **layers, int nl) {
     char path[1400], font[1400] = "", file[1400] = "";
+#ifdef __ANDROID__
+    // GameActivity prepares these immutable defaults in app-private storage, never in a user's mod.
+    const char *internal = SDL_GetAndroidInternalStoragePath();
+    if (internal) {
+        char builtin[1400];
+        snprintf(builtin, sizeof builtin, "%s/forge-v1.5.1/romfs", internal);
+        if (ci_path(builtin, "nativeNX/forge/fonts/Roboto-Medium.ttf", path, sizeof path)) snprintf(font, sizeof font, "%s", path);
+        if (ci_path(builtin, "nativeNX/forge/config.ini", path, sizeof path)) snprintf(file, sizeof file, "%s", path);
+    }
+#endif
     for (int l = 0; l < nl; l++) {
         if (ci_path(layers[l], "nativeNX/forge/fonts/Roboto-Medium.ttf", path, sizeof path)) snprintf(font, sizeof font, "%s", path);
         if (ci_path(layers[l], "nativeNX/forge/config.ini", path, sizeof path)) snprintf(file, sizeof file, "%s", path);

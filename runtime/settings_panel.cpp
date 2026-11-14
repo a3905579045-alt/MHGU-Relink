@@ -2130,10 +2130,8 @@ void mods_rows(std::vector<Row> &r) {
     });
     // Forge's menu (its plugins' settings) opens with a key (Insert): with a controller alone (an Android TV box) this
     // row is the way in. It opens over this menu, which waits under it; closing it comes back here (runtime/overlay.cpp).
-    const char *names[1];
-    bool plugins = forge_plugin_titles(names, 1) > 0 || forge_plugins_have(FORGE_IMGUI_RENDER);
     header(r, "mods.forge.header", tr("Forge plugins"));
-    action(r, "mods.forge", tr("Open the Forge menu"), []() { forge_requested = true; }, plugins);
+    action(r, "mods.forge", tr("Open the Forge menu"), []() { forge_requested = true; });
     r.back().help = tr("The Forge plugins' own settings, over this menu. Cancel (the button that goes back in the game's menus) or Start + Back closes it and comes back here. On a keyboard the Forge menu key (Insert) opens and closes it.");
 }
 std::vector<Row> main_rows() {
@@ -2800,7 +2798,7 @@ void combo_rows(std::vector<Row> &r) {
     Config &c = s.draft;
     int k = s_combo;
     // Keep the saved profile slots stable; only two of the four legacy layouts remain selectable.
-    static const std::array<int, 17> profiles = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 18};
+    static const std::array<int, 18> profiles = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 18, TOUCH_UNIVERSAL_PROFILE};
     auto selected = std::find(profiles.begin(), profiles.end(), s_combo_profile);
     if (selected == profiles.end()) {
         s_combo_profile = 16;
@@ -2809,7 +2807,8 @@ void combo_rows(std::vector<Row> &r) {
     add_choice(r, "ce.weapon", "Touch layout", (int)(selected - profiles.begin()),
                {tr("Great Sword"), tr("Sword & Shield"), tr("Hammer"), tr("Lance"), tr("Heavy Bowgun"), tr("Light Bowgun"),
                 tr("Long Sword"), tr("Switch Axe"), tr("Gunlance"), tr("Bow"), tr("Dual Blades"), tr("Hunting Horn"),
-                tr("Insect Glaive"), tr("Charge Blade"), tr("Prowler"), tr("Melee layout 2"), tr("Ranged layout")},
+                tr("Insect Glaive"), tr("Charge Blade"), tr("Prowler"), tr("Melee layout 2"), tr("Ranged layout"),
+                tr("Universal (virtual buttons)")},
                [](int v) { s_combo_profile = profiles[v]; });
     int profile = s_combo_profile >= 0 && s_combo_profile < TOUCH_LAYOUT_PROFILES ? s_combo_profile : 0;
     uint32_t mask = config_combo_mask(c.touch_weapon_combo[profile][k]);

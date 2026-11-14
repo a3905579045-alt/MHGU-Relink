@@ -405,6 +405,7 @@ public class GameActivity extends SDLActivity {
         new File(home, "cheats").mkdirs();
         copyAsset("pipelines.list", new File(home, "pipelines.list"));
         copyAsset("cjk.ttf", new File(home, "cjk.ttf"));
+        prepareForgeAssets();
         // los trucos opcionales del port (comer / beber más rápido): la primera vez, apagados (cheats/_off.txt: el
         // runtime enciende todo truco que encuentra salvo los listados ahí; la pestaña Trucos lo reescribe)
         // (una sola vez: si el jugador lo borra o lo renombra con '_', no vuelve)
@@ -420,6 +421,18 @@ public class GameActivity extends SDLActivity {
                     Log.w(TAG, "cheats/_off.txt: " + e);
                 }
             }
+        }
+    }
+
+    private void prepareForgeAssets() {
+        // Built-in defaults live outside the player's mods; their RomFS files still take precedence.
+        String root = "forge-v1.5.1/romfs/nativeNX/forge/";
+        for (String name : new String[] {"config.ini", "fonts/Roboto-Medium.ttf",
+                "shaders/imgui_vert.vsh", "shaders/imgui_frag.fsh", "shaders/compiled/imgui.fbin"}) {
+            String asset = root + name;
+            File target = new File(getFilesDir(), asset);
+            target.getParentFile().mkdirs();
+            copyAsset(asset, target);
         }
     }
 

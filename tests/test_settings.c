@@ -24,6 +24,59 @@ static char *read_file(const char *path) {
     assert(fread(text, 1, size, f) == (size_t)size); text[size] = 0;
     fclose(f); return text;
 }
+static void universal_combo_roundtrip(const char *path) {
+    FILE *f = fopen(path, "wb"); assert(f);
+    fputs("[Touch]\n", f);
+    for (int i = 1; i <= TOUCH_COMBOS; i++)
+        fprintf(f, "Combo%d = X+A\nCombo%dPad = L3\n", i, i);
+    fputs("GreatSwordCombo1 = B\nMelee1Combo1 = L+ZL\nMelee3Combo1 = R+ZR\n"
+          "UniversalCombo2 =\nUniversalCombo2Pad = None\n", f);
+    fclose(f);
+    g_config = config_defaults(); config_load();
+    Config migrated = config_editable();
+    for (int i = 0; i < TOUCH_COMBOS; i++) {
+        assert(!strcmp(migrated.touch_weapon_combo[TOUCH_UNIVERSAL_PROFILE][i], i == 1 ? "" : "X+A"));
+        assert(migrated.touch_weapon_combo_pad[TOUCH_UNIVERSAL_PROFILE][i] == (i == 1 ? PADB_NONE : PADB_L3));
+    }
+    const char *const combos[TOUCH_COMBOS] = {"L+R", "X+A", "ZL+ZR", "L+X", "R+A", "Plus+Minus"};
+    Config edited = migrated;
+    for (int i = 0; i < TOUCH_COMBOS; i++) {
+        char key[32];
+        snprintf(key, sizeof key, "UniversalCombo%d", i + 1);
+        const ConfigSetting *combo = config_setting(key);
+        assert(combo && !config_restart_key(key) && config_parse(combo, combos[i], &edited));
+        snprintf(key, sizeof key, "UniversalCombo%dPad", i + 1);
+        assert(config_setting(key));
+        edited.touch_weapon_combo_pad[TOUCH_UNIVERSAL_PROFILE][i] = PADB_L3 + i;
+    }
+    char error[256];
+    assert(config_save(&edited, error, sizeof error));
+    config_set_touch_profile(TOUCH_UNIVERSAL_PROFILE);
+    assert(config_live_touch_profile() == TOUCH_UNIVERSAL_PROFILE);
+    for (int i = 0; i < TOUCH_COMBOS; i++) {
+        assert(config_live_touch_combo(TOUCH_UNIVERSAL_PROFILE, i) == config_combo_mask(combos[i]));
+        assert(config_live_touch_combo_pad(TOUCH_UNIVERSAL_PROFILE, i) == PADB_L3 + i);
+    }
+    g_config = config_defaults(); config_load();
+    Config loaded = config_editable();
+    assert(!memcmp(loaded.touch_weapon_combo[TOUCH_UNIVERSAL_PROFILE], edited.touch_weapon_combo[TOUCH_UNIVERSAL_PROFILE],
+                   sizeof loaded.touch_weapon_combo[TOUCH_UNIVERSAL_PROFILE]));
+    assert(!memcmp(loaded.touch_weapon_combo_pad[TOUCH_UNIVERSAL_PROFILE], edited.touch_weapon_combo_pad[TOUCH_UNIVERSAL_PROFILE],
+                   sizeof loaded.touch_weapon_combo_pad[TOUCH_UNIVERSAL_PROFILE]));
+    assert(!memcmp(loaded.touch_weapon_combo, migrated.touch_weapon_combo,
+                   TOUCH_UNIVERSAL_PROFILE * sizeof loaded.touch_weapon_combo[0]));
+    assert(!memcmp(loaded.touch_weapon_combo_pad, migrated.touch_weapon_combo_pad,
+                   TOUCH_UNIVERSAL_PROFILE * sizeof loaded.touch_weapon_combo_pad[0]));
+    assert(!memcmp(loaded.touch_combo, migrated.touch_combo, sizeof loaded.touch_combo));
+    assert(!memcmp(loaded.touch_combo_pad, migrated.touch_combo_pad, sizeof loaded.touch_combo_pad));
+    loaded.touch_weapon_combo[TOUCH_UNIVERSAL_PROFILE][1][0] = 0;
+    loaded.touch_weapon_combo_pad[TOUCH_UNIVERSAL_PROFILE][1] = PADB_NONE;
+    assert(config_save(&loaded, error, sizeof error));
+    g_config = config_defaults(); config_load();
+    assert(!config_live_touch_combo(TOUCH_UNIVERSAL_PROFILE, 1));
+    assert(config_live_touch_combo_pad(TOUCH_UNIVERSAL_PROFILE, 1) == PADB_NONE);
+    puts("PASS: all six universal combos and controller bindings migrate missing legacy defaults, preserve explicit empty values, save/reload independently and keep every existing profile unchanged.");
+}
 int main(int argc, char **argv) {
     assert(argc == 2);
     const char *path = argv[1];
@@ -375,6 +428,7 @@ int main(int argc, char **argv) {
     bad = voice_loaded; bad.voice_volume = -1; assert(!config_save(&bad, error, sizeof error));
     bad = voice_loaded; bad.noise_suppression = 2;
     assert(!config_save(&bad, error, sizeof error) && config_voice_noise());
+    universal_combo_roundtrip(path);
     remove(path);
     puts("PASS: INI round trip, Auto/Desktop, environment overrides, comments/unknown keys, duplicate aliases, quest removal, invalid input, atomic write failure, live volume and English/Spanish/Chinese, icons, hot settings, keybinds and restart classification.");
     return 0;

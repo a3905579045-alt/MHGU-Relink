@@ -145,6 +145,9 @@ class SettingsLocaleTest(unittest.TestCase):
         self.assertIn("settings_help_zh(r.key.c_str())", source)
 
         default_keys, help_keys = default_ini_keys(config)
+        for number in range(1, 7):
+            self.assertIn(f"UniversalCombo{number}", default_keys)
+            self.assertIn(f"UniversalCombo{number}Pad", default_keys)
         table = config.split("const ConfigSetting g_settings[] = {", 1)[1].split("#undef ON_OFF", 1)[0]
         setting_keys = set(default_keys)
         for _, names in re.findall(r'\{\s*(' + LITERAL + r')\s*,\s*(' + LITERAL + r')', table):
@@ -187,6 +190,8 @@ class SettingsLocaleTest(unittest.TestCase):
         self.assertIn("默认：1.0", translations["MotionGain"])
         self.assertIn("左右", translations["MotionInvertX"])
         self.assertIn("上下", translations["MotionInvertY"])
+        self.assertIn("通用（传统虚拟按键）", translations["Combo1"])
+        self.assertIn("6 个组合键", translations["Combo1"])
 
 
 if __name__ == "__main__":

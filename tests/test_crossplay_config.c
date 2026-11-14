@@ -23,7 +23,7 @@ int main(int argc, char **argv) {
     const int touch_defaults[] = TOUCH_SHOW_DEFAULT;
     assert(!memcmp(initial.touch_show, touch_defaults, sizeof touch_defaults));
     assert(initial.touch_controls == TOUCH_AUTO && initial.touch_camera == 1.0f);
-    assert(TOUCH_LEGACY_LAYOUTS == 4 && TOUCH_LAYOUT_PROFILES == 19);
+    assert(TOUCH_LEGACY_LAYOUTS == 4 && TOUCH_UNIVERSAL_PROFILE == 19 && TOUCH_LAYOUT_PROFILES == 20);
     g_config = initial; config_load();
     Config c = config_editable();
     c.crossplay = XP_MIXED; c.ryu_host = 1; c.ryu_port = 30457;

@@ -617,7 +617,7 @@ static inline const char *settings_help_zh(const char *key) {
         {"ShowAmmo", "显示弹药或瓶的切换箭头，按住可连续切换。在道具栏上向上或向下滑动也可切换。默认：开启。"},
         {"ShowItemArrows", "在道具栏两侧显示切换箭头，在道具栏上滑动也可切换道具。默认：关闭。"},
         {"ShowMenuZL|ShowMenuZR", "在游戏菜单的 L 或 R 旁显示对应的 ZL 或 ZR 按钮；道具箱、加工店等菜单用它切换分类或查看更多信息。"},
-        {"Combo1|Combo2|Combo3|Combo4|Combo5|Combo6", "自定义组合按键，同时触发多个游戏按键。可用 A、B、X、Y、L、R、ZL、ZR、Plus、Minus、方向键、L3、R3，以 + 连接，例如 X+A。各武器布局及任务外的近战布局 2、远程布局分别保存。默认：空。"},
+        {"Combo1|Combo2|Combo3|Combo4|Combo5|Combo6", "自定义组合按键，同时触发多个游戏按键。可用 A、B、X、Y、L、R、ZL、ZR、Plus、Minus、方向键、L3、R3，以 + 连接，例如 X+A。各武器布局、通用（传统虚拟按键）布局及任务外的近战布局 2、远程布局分别保存 6 个组合键。默认：空。"},
         {"Combo1Pad|Combo2Pad|Combo3Pad|Combo4Pad|Combo5Pad|Combo6Pad", "指定一个手柄按键来触发对应组合，并替代该键原本的功能。可选无、L3、R3、减号、Guide、Misc、背键 1 到 4 或触摸板。默认：无。"},
         {"CameraSpeed", "触控滑动转动镜头的幅度；1 表示滑过一个屏幕高度约转动 90 度。范围：0.2 到 5。默认：1.0。"},
         {"Opacity", "触控按键的不透明程度，数值越低越透明。范围：0.2 到 1。默认：0.8。"},

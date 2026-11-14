@@ -15,7 +15,7 @@ def main():
     vcvars = Path(install) / "VC/Auxiliary/Build/vcvars64.bat"
     imgui = ROOT / "third_party/cimgui/imgui"
     sdl = ROOT / "deps/out/arm64-v8a/sdl3/include"
-    vulkan = ROOT / "deps/src/SDL3-3.4.18/src/video/khronos"
+    vulkan = Path(os.environ.get("VULKAN_HEADERS", str(ROOT / "deps/src/SDL3-3.4.18/src/video/khronos")))
     if not (sdl / "SDL3/SDL.h").is_file() or not (vulkan / "vulkan/vulkan.h").is_file():
         raise SystemExit("Build the project's Android SDL3 dependency first (headers only are used).")
     with tempfile.TemporaryDirectory(prefix="mhgu-forge-test-") as directory:

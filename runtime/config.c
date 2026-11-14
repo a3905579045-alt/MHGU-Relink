@@ -579,7 +579,7 @@ static const char DEFAULT_INI[] =
     "Combo5Pad = None\n"
     "Combo6 =\n"
     "Combo6Pad = None\n"
-    "; Per-layout combinations: each weapon layout and each of the four layouts outside a quest has its own Combo1..6\n"
+    "; Each weapon layout, the universal layout and each legacy layout has its own Combo1..6\n"
 #define DEFAULT_LAYOUT_COMBOS(name) \
     name "Combo1 =\n" name "Combo1Pad = None\n" name "Combo2 =\n" name "Combo2Pad = None\n" \
     name "Combo3 =\n" name "Combo3Pad = None\n" name "Combo4 =\n" name "Combo4Pad = None\n" \
@@ -603,6 +603,7 @@ static const char DEFAULT_INI[] =
     DEFAULT_LAYOUT_COMBOS("Melee2")
     DEFAULT_LAYOUT_COMBOS("Melee3")
     DEFAULT_LAYOUT_COMBOS("RangedLayout")
+    DEFAULT_LAYOUT_COMBOS("Universal")
 #undef DEFAULT_LAYOUT_COMBOS
     "\n"
     "; How far a drag turns the camera (1: about 90 degrees for a drag the screen's height)\n"
@@ -1117,6 +1118,7 @@ const ConfigSetting g_settings[] = {
     WEAPON_COMBOS(12, "InsectGlaive"), WEAPON_COMBOS(13, "ChargeBlade"), WEAPON_COMBOS(14, "Prowler"),
     WEAPON_COMBOS(15, "Melee1"), WEAPON_COMBOS(16, "Melee2"), WEAPON_COMBOS(17, "Melee3"),
     WEAPON_COMBOS(18, "RangedLayout"),
+    WEAPON_COMBOS(TOUCH_UNIVERSAL_PROFILE, "Universal"),
 #undef WEAPON_COMBOS
 #undef WEAPON_COMBO
     {"Touch", "CameraSpeed", SET_FLOAT, F(touch_camera), 0, 0.2f, 5.0f, NULL, NULL, false, ERR_VIEW},
@@ -1489,7 +1491,7 @@ static bool touch_weapon_combo_pad_seen[TOUCH_LAYOUT_PROFILES][TOUCH_COMBOS];
 static const char *const TOUCH_LAYOUT_NAMES[TOUCH_LAYOUT_PROFILES] = {
     "greatsword", "swordshield", "hammer", "lance", "heavybowgun", "lightbowgun", "longsword", "switchaxe",
     "gunlance", "bow", "dualblades", "huntinghorn", "insectglaive", "chargeblade", "prowler", "melee1", "melee2",
-    "melee3", "rangedlayout"
+    "melee3", "rangedlayout", "universal"
 };
 
 static int touch_combo_profile(const char *key, int *index, bool *pad) {

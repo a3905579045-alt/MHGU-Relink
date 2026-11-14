@@ -1,4 +1,4 @@
-"""Build the real settings-panel ImGui loop; run only its focused --touch-presets suite and host previews."""
+"""Build the real settings-panel ImGui loop; run its focused touch and Forge suites and host previews."""
 from pathlib import Path
 import os
 import shutil
@@ -46,10 +46,11 @@ log = build.stdout + build.stderr
 print(log.decode('utf-8', errors='replace'), end='')
 build.check_returncode()
 shutil.copy2(sdl / 'lib/x64/SDL3.dll', output / 'SDL3.dll')
-result = subprocess.run([str(exe), '--touch-presets'], env=env, cwd=output, capture_output=True, timeout=90)
-log = result.stdout + result.stderr
-(output / 'settings-panel-touch-presets.log').write_bytes(log)
-print(log.decode('utf-8', errors='replace'), end='')
-result.check_returncode()
-print('PASS: focused --touch-presets suite only; real settings_panel.cpp / ImGui loop with host-side touch API stubs.')
+for suite in ('touch-presets', 'forge-menu'):
+    result = subprocess.run([str(exe), '--' + suite], env=env, cwd=output, capture_output=True, timeout=90)
+    log = result.stdout + result.stderr
+    (output / ('settings-panel-' + suite + '.log')).write_bytes(log)
+    print(log.decode('utf-8', errors='replace'), end='')
+    result.check_returncode()
+print('PASS: focused --touch-presets and --forge-menu suites; real settings_panel.cpp / ImGui loop with host-side touch API stubs.')
 print('This runner does not run the legacy no-argument suite, an APK, or the game. Logs and host previews:', output)

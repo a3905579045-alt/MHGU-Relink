@@ -209,6 +209,22 @@ static void click_focused_row() {
     io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
     idle();
 }
+static void forge_menu_regression() {
+    idle();
+    for (int page = 0; page < 5; ++page) tab();
+    assert(!settings_panel_take_forge());
+    seek_row("mods.forge");  // No plugin titles or callbacks exist in this test.
+    confirm();
+    assert(settings_panel_take_forge());
+    assert(!settings_panel_take_forge());
+    assert(opened && !settings_panel_dirty());
+    click_focused_row();
+    assert(settings_panel_take_forge());
+    assert(!settings_panel_take_forge());
+    opened = false;
+    frame();
+    puts("PASS: Forge menu is reachable with zero plugins, by controller and pointer, without changing settings");
+}
 static void open_presets() {
     seek_row("touch.presets");
     confirm();
@@ -360,8 +376,9 @@ static void preset_regression() {
     puts("PASS: real settings-panel ImGui loop: 20 directly usable presets; saved/current selection and edit target stay separate across failure and re-entry; reserved initialization and explicit base changes; cached current/name/base queries; exact editor and Save/Discard/Cancel/Back (host stubs, no Android/game execution)");
 }
 static void combo_layout_regression() {
-    static_assert(TOUCH_WEAPON_LAYOUTS == 15 && TOUCH_LEGACY_LAYOUTS == 4 && TOUCH_LAYOUT_PROFILES == 19,
-                  "Removing choices must not renumber the saved combo profiles");
+    static_assert(TOUCH_WEAPON_LAYOUTS == 15 && TOUCH_LEGACY_LAYOUTS == 4 &&
+                  TOUCH_UNIVERSAL_PROFILE == 19 && TOUCH_LAYOUT_PROFILES == 20,
+                  "The universal profile must be appended without renumbering saved combo profiles");
     Config fixture = config_editable();
     memset(fixture.touch_weapon_combo, 0, sizeof fixture.touch_weapon_combo);
     memset(fixture.touch_weapon_combo_pad, 0, sizeof fixture.touch_weapon_combo_pad);
@@ -382,7 +399,7 @@ static void combo_layout_regression() {
     confirm();
     assert(focused_row("choice.15"));
     press(ImGuiKey_End);
-    assert(focused_row("choice.16")); // Exactly 15 weapon choices plus the two surviving general layouts.
+    assert(focused_row("choice.17")); // 15 weapons, two surviving general layouts and the independent universal layout.
     seek_row("choice.15");
     confirm();
     seek_row("ce.0");
@@ -410,6 +427,18 @@ static void combo_layout_regression() {
         seek_row("ce.0");
         confirm();
     }
+    seek_row("ce.weapon");
+    confirm();
+    seek_row("choice.17");
+    confirm();
+    seek_row("ce.2");
+    confirm();
+    seek_row("ce.0");
+    confirm();
+    seek_row("ce.pad");
+    confirm();
+    seek_row("choice.3");
+    confirm();
     back();
     back();
     seek_row("save");
@@ -422,6 +451,8 @@ static void combo_layout_regression() {
     assert(saved.touch_weapon_combo_pad[16][0] == PADB_L3);
     assert(config_combo_mask(saved.touch_weapon_combo[18][0]) == config_combo_mask("B"));
     assert(saved.touch_weapon_combo_pad[18][0] == PADB_R3);
+    assert(config_combo_mask(saved.touch_weapon_combo[TOUCH_UNIVERSAL_PROFILE][0]) == config_combo_mask("X+A"));
+    assert(saved.touch_weapon_combo_pad[TOUCH_UNIVERSAL_PROFILE][0] == PADB_MINUS);
     for (int retired : {15, 17}) {
         assert(!memcmp(saved.touch_weapon_combo[retired], fixture.touch_weapon_combo[retired],
                        sizeof saved.touch_weapon_combo[retired]));
@@ -444,7 +475,25 @@ static void combo_layout_regression() {
     assert(!settings_panel_dirty()); // Merely opening a retired profile never overwrites its old data.
     opened = false;
     frame();
-    puts("PASS: real settings-panel combo selector: 15 unchanged weapon slots plus UI 15->profile 16 and UI 16->profile 18; retired profiles 15/17 preserved and safely defaulted (host stubs)");
+    config_set_touch_profile(TOUCH_UNIVERSAL_PROFILE);
+    opened = true;
+    idle();
+    seek_row("touch.buttons");
+    confirm();
+    for (int k = 0; k < TOUCH_COMBOS; k++) {
+        std::string row = "tc." + std::to_string(k);
+        seek_row(row.c_str());
+        confirm();
+        seek_row("ce.weapon");
+        confirm();
+        assert(focused_row("choice.17"));
+        back();
+        back();
+    }
+    assert(!settings_panel_dirty());
+    opened = false;
+    frame();
+    puts("PASS: real settings-panel combo selector: 15 unchanged weapons, general profiles 16/18 and six independent universal combos at profile 19; retired profiles 15/17 preserved and safely defaulted (host stubs)");
 }
 static void touch_button_rows_regression() {
     for (int legacy_aim = 0; legacy_aim < 2; legacy_aim++) {
@@ -577,7 +626,8 @@ static void preset_previews() {
 }
 int main(int argc, char **argv) {
     const bool touch_presets_only = argc > 1 && !strcmp(argv[1], "--touch-presets");
-    if (touch_presets_only) setvbuf(stdout, nullptr, _IONBF, 0);
+    const bool forge_menu_only = argc > 1 && !strcmp(argv[1], "--forge-menu");
+    if (touch_presets_only || forge_menu_only) setvbuf(stdout, nullptr, _IONBF, 0);
 #ifdef _WIN32
     _putenv_s("MHGU_CONFIG", "obj/settings-test/panel-settings.ini");
 #else
@@ -607,7 +657,7 @@ int main(int argc, char **argv) {
     io.DeltaTime = 1.f / 60;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
     io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
-    if (touch_presets_only) {
+    if (touch_presets_only || forge_menu_only) {
         io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures | ImGuiBackendFlags_RendererHasVtxOffset;
         io.Fonts->AddFontDefaultVector();
     } else {
@@ -618,6 +668,12 @@ int main(int argc, char **argv) {
     config_store_loaded(&baseline);
     config_runtime_init(&baseline);
 
+    if (forge_menu_only) {
+        forge_menu_regression();
+        ImGui::DestroyContext();
+        remove("obj/settings-test/panel-settings.ini");
+        return 0;
+    }
     if (touch_presets_only) {
         preset_regression();
         combo_layout_regression();
