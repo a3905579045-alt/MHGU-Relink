@@ -37,7 +37,7 @@
 #include <vector>
 
 namespace {
-enum class View { Main, Keyboard, CloseChanges, Exit, Restart, Reset, Move, Conflicts, KeyCapture, Keybinds, Actions, TouchButtons, TouchTemplates, TemplateChanges, TemplateOverwrite, ComboEdit,
+enum class View { Main, Keyboard, CloseChanges, Exit, Restart, Reset, Move, Conflicts, KeyCapture, Keybinds, Actions, TouchButtons, TouchTemplates, TemplateDetail, TemplateChanges, TemplateOverwrite, ComboEdit, TouchIcons, TouchIconEdit,
                   PadList, PadMap };
 enum class Command { None, Save };
 struct Row {
@@ -133,6 +133,12 @@ struct TouchTemplateTab {
     bool valid[TOUCH_TEMPLATE_COUNT] = {}, saving = false;
     int selected = 0;
 } touch_templates;
+struct TouchIconTab {
+    int selected = 0, requested_button = -1;
+    uint64_t generation = 0;
+    bool pending = false, active = false;
+    std::string notice;
+} touch_icons;
 // The game actions (runtime/actions.h, the [Actions*] sections of the ini): edited as a draft like the settings, saved
 // with them. dev: the device whose bindings the rows show (0 the controller, 1 keyboard and mouse); weapon: 0 every
 // weapon, 1..15 that class's own bindings; capture: the action an input is being chosen for (-1: none)
@@ -598,6 +604,7 @@ float list_scroll() {
     return w ? w->Scroll.y : 0;
 }
 void push(View view, const std::string &first) {
+    if (s.view == View::TouchIconEdit) touch_icons.active = false;
     s.dropdown.open = false;
     s.drag = {};
     s.origins.push_back({s.view, s.focus, list_scroll()});
@@ -609,6 +616,7 @@ void push(View view, const std::string &first) {
     ImGui::ClearActiveID();
 }
 void pop() {
+    if (s.view == View::TouchIconEdit) touch_icons.active = false;
     s.dropdown.open = false;
     s.drag = {};
     if (s.origins.empty()) {
@@ -626,6 +634,7 @@ void pop() {
     ImGui::ClearActiveID();
 }
 void first_page(int page) {
+    touch_icons.active = false;
     s.dropdown.open = false;
     s.drag = {};
     s.page = page;
@@ -819,10 +828,10 @@ void select_touch_template(int slot) {
     touch_templates.name = touch_templates.valid[slot] ? touch_templates.names[slot] : fmt("Template %d", slot + 1);
     touch_templates.notice.clear();
     s.error.clear();
+    push(View::TemplateDetail, "tp.save");
 }
 void open_touch_templates() {
     refresh_touch_templates();
-    select_touch_template(touch_templates.selected);
     push(View::TouchTemplates, "tp." + std::to_string(touch_templates.selected));
 }
 void run_touch_template() {
@@ -837,7 +846,7 @@ void run_touch_template() {
     if (!saving) s.saved = s.draft = config_editable();
     refresh_touch_templates();
     s.error.clear();
-    touch_templates.notice = fmt(saving ? "Saved template %d/20: %s" : "Applied template %d/20: %s",
+    touch_templates.notice = fmt(saving ? "Saved template %d/40: %s" : "Applied template %d/40: %s",
                                  slot + 1, touch_templates.names[slot].c_str());
 }
 void continue_touch_template() {
@@ -2438,9 +2447,9 @@ std::vector<Row> main_rows() {
                    [](int v) { c.touch_controls = v; }, ini("Controls"));
         add_bool(r, "touch.hud", "Move the HUD for touch", &c.touch_hud, ini("MoveHUD"));
         add_bool(r, "touch.floating", "Floating left stick", &c.touch_floating, ini("FloatingStick"));
-        r.back().help = tr("On: the left stick appears where your finger lands. Off: it stays at the saved position. The stick moves the hunter, never the camera. Automatic R uses its separate switch.");
-        add_bool(r, "touch.auto_r", "Full stick automatically holds R", &c.touch_auto_r, ini("AutoR"));
-        r.back().help = tr("On: fully push the fixed or floating movement stick to hold R in villages and quests, with the weapon drawn or sheathed. Release or move inward to stop automatic R; manual R stays independent. Default: Off.");
+        r.back().help = tr("On: the left stick appears where your finger lands. Off: it stays at the saved position. The stick moves the hunter, never the camera. Automatic running uses its separate switch.");
+        add_bool(r, "touch.auto_r", "Full stick automatically runs", &c.touch_auto_r, ini("AutoR"));
+        r.back().help = tr("On: fully push the fixed or floating movement stick for automatic running when the game allows it. This never triggers other R actions. Release or move inward to stop automatic running. The separate R button keeps all native functions and can be used at the same time. Default: Off.");
         add_bool(r, "lock.on", "Lock-on", &c.lock_on, ini("LockOn"));
         r.back().help = tr("Tap the target icon to lock on, then tap again to switch monsters. Hold it for half a second, or click a controller's right stick, to toggle the lock. Off: the icon turns the camera to the monster once, as in the original game.");
         add_bool(r, "lock.persistent", "Persistent lock-on", &c.persistent_lock_on, ini("PersistentLockOn"));
@@ -2452,7 +2461,7 @@ std::vector<Row> main_rows() {
         add_bool(r, "motion.x", "Invert motion horizontal", &c.motion_flip_x, ini("MotionInvertX"));
         add_bool(r, "motion.y", "Invert motion vertical", &c.motion_flip_y, ini("MotionInvertY"));
         action(r, "touch.buttons", tr("Buttons on the screen"), []() { push(View::TouchButtons, "tb.0"); });
-        r.back().help = tr("Choose which of the game's buttons show on the screen, and add buttons of your own that press several at once.");
+        r.back().help = tr("Choose visible buttons and six combinations. Item and ammo arrows never turn the camera when dragged. Independent ammo arrows are available only during quests with a bow or bowgun; move and resize them in the layout editor.");
         number(r, "touch.camera", tr("Touch camera speed"), &c.touch_camera, lo("CameraSpeed"), hi("CameraSpeed"), .05f, ini("CameraSpeed"));
         number(r, "touch.opacity", tr("Touch controls opacity"), &c.touch_opacity, lo("Opacity"), hi("Opacity"), .05f, ini("Opacity"));
         add_bool(r, "touch.vibration", "Vibrate on touch", &c.touch_vibration, ini("Vibration"));
@@ -2483,7 +2492,9 @@ std::vector<Row> main_rows() {
         r.back().help = tr("Pressing Plus and Minus together (Start + Back on a controller) opens this menu. Turn it off to keep that combination for the game or a cheat, for example when you play with a keyboard and mouse. F1 still opens the menu.");
 #endif
         action(r, "touch.templates", tr("Custom touch templates"), []() { open_touch_templates(); });
-        r.back().help = tr("Save the current layout and its six combined buttons in one of 20 named slots. Applying a template restores positions, sizes, combined buttons, controller bindings and button names.");
+        r.back().help = tr("Open a template slot to save the current layout, icons and six combined buttons. An empty slot has a default name and can be saved immediately. Applying restores its independent snapshot.");
+        action(r, "touch.icons", tr("Touch button icons"), []() { push(View::TouchIcons, "ti.0"); });
+        r.back().help = tr("Choose default, built-in or custom image icons for each common button and all six combined buttons. Icons are saved immediately with the current layout and copied into templates.");
         break;
     case 3:
         number(r, "port", "Host port (TCP / UDP)", &c.ldn_port, (int)lo("Port"), (int)hi("Port"), 1, ini("Port"));
@@ -2767,7 +2778,7 @@ void touch_button_rows(std::vector<Row> &r) {
     const int profile = TOUCH_UNIVERSAL_PROFILE;
     header(r, "tb.head", tr("Buttons on the screen"));
     for (int i = 0; i < TB_COUNT; i++) {
-        if ((i >= TB_RANGED && i <= TB_AMMO) || i == TB_MENU_ZL || i == TB_MENU_ZR) continue;
+        if ((i >= TB_RANGED && i < TB_AMMO) || i == TB_MENU_ZL || i == TB_MENU_ZR) continue;
         add_bool(r, ("tb." + std::to_string(i)).c_str(), TB_TITLES[i], &c.touch_show[i], nullptr);
         r.back().key = TB_KEYS[i];
     }
@@ -2784,13 +2795,17 @@ void touch_button_rows(std::vector<Row> &r) {
     action(r, "tb.back", tr("Back"), []() { pop(); });
 }
 void touch_template_rows(std::vector<Row> &r) {
-    if (!touch_templates.notice.empty()) header(r, "tp.notice", touch_templates.notice);
     for (int i = 0; i < TOUCH_TEMPLATE_COUNT; i++) {
-        action(r, "tp." + std::to_string(i), fmt("Template %d/20: %s", i + 1,
+        action(r, "tp." + std::to_string(i), fmt("Template %d/40: %s", i + 1,
                touch_templates.valid[i] ? touch_templates.names[i].c_str() : tr("Empty")), [i]() { select_touch_template(i); });
         r.back().current = i == touch_templates.selected;
-        r.back().help = tr("Select a slot, then save the current layout or apply its saved template. Empty or invalid slots cannot be applied.");
+        r.back().help = tr("Open this slot to save the current layout. Empty slots can be saved immediately with their default name.");
     }
+}
+void touch_template_detail_rows(std::vector<Row> &r) {
+    header(r, "tp.slot", fmt("Template %d/40: %s", touch_templates.selected + 1,
+           touch_templates.valid[touch_templates.selected] ? touch_templates.names[touch_templates.selected].c_str() : tr("Empty")));
+    if (!touch_templates.notice.empty()) header(r, "tp.notice", touch_templates.notice);
     action(r, "tp.name", tr("Template name"), []() {
         keyboard(tr("Template name"), touch_templates.name, TOUCH_TEMPLATE_NAME_MAX - 1,
                  [](const std::string &typed, std::string &error) {
@@ -2806,11 +2821,80 @@ void touch_template_rows(std::vector<Row> &r) {
     });
     r.back().value = touch_templates.name;
     action(r, "tp.save", tr("Save current layout to this slot"), []() { request_touch_template(true); });
-    r.back().help = tr("Saves positions, sizes, HUD offsets, all six combined buttons, their controller bindings and names. Replacing an existing template asks for confirmation.");
+    r.back().help = tr("Saves positions, sizes, HUD offsets, icons and all six combined buttons, their controller bindings and names. Replacing an existing template asks for confirmation.");
     action(r, "tp.use", tr("Apply selected template"), []() { request_touch_template(false); },
            touch_templates.valid[touch_templates.selected]);
     r.back().help = tr("Restores this template's layout and combined buttons immediately. Unsaved settings must first be saved or discarded.");
     action(r, "tp.back", tr("Back"), []() { pop(); });
+}
+std::string touch_icon_button_title(int button) {
+    if (button >= 16 && button < 16 + TOUCH_COMBOS) return fmt("Combined button %d", button - 15);
+    return tr(touch_icon_button_name(button));
+}
+std::string touch_icon_value(int button) {
+    int choice = 0;
+    touch_icon_get(button, &choice, nullptr);
+    return tr(choice == -1 ? "Custom image" : choice ? touch_icon_builtin_name(choice) : "Default icon");
+}
+void set_touch_icon_choice(int choice) {
+    touch_icons.active = false;
+    if (touch_icon_set(touch_icons.selected, choice, nullptr, touch_layout_generation())) {
+        touch_icons.notice = tr("Icon saved to the current layout.");
+        s.error.clear();
+    } else s.error = tr("Could not save this icon. The previous icon was kept.");
+}
+void poll_touch_icon(bool open) {
+    if (!open) touch_icons.active = false;
+    char hash[TOUCH_ICON_HASH_SIZE] = {};
+    int result = ui_take_touch_icon(hash);
+    if (!result) return;
+    bool apply = touch_icons.pending && touch_icons.active && open && s.view == View::TouchIconEdit &&
+        touch_icons.selected == touch_icons.requested_button && touch_layout_generation() == touch_icons.generation;
+    touch_icons.pending = touch_icons.active = false;
+    if (!apply || result == -1) return;
+    if (result == 1 && touch_icon_set(touch_icons.requested_button, -1, hash, touch_icons.generation)) {
+        touch_icons.notice = tr("Icon saved to the current layout.");
+        s.error.clear();
+    } else s.error = tr("Could not import this image. The previous icon was kept.");
+}
+void touch_icon_rows(std::vector<Row> &r) {
+    for (int i = 0; i < TOUCH_ICON_BUTTON_COUNT; ++i) {
+        action(r, "ti." + std::to_string(i), touch_icon_button_title(i), [i]() {
+            touch_icons.selected = i;
+            touch_icons.notice.clear();
+            push(View::TouchIconEdit, "ti.default");
+        });
+        r.back().value = touch_icon_value(i);
+    }
+    action(r, "ti.back", tr("Back"), []() { pop(); });
+}
+void touch_icon_edit_rows(std::vector<Row> &r) {
+    header(r, "ti.button", touch_icon_button_title(touch_icons.selected));
+    if (!touch_icons.notice.empty()) header(r, "ti.notice", touch_icons.notice);
+    int choice = 0;
+    touch_icon_get(touch_icons.selected, &choice, nullptr);
+    action(r, "ti.default", tr("Default icon"), []() { set_touch_icon_choice(0); });
+    r.back().current = choice == 0;
+    bool picker_available = false;
+#if defined(__ANDROID__) || defined(MHGU_TOUCH_ICON_PICKER_TEST)
+    picker_available = true;
+#endif
+    action(r, "ti.import", tr("Choose image from device"), []() {
+        uint64_t generation = touch_layout_generation();
+        if (!touch_icons.pending && ui_request_touch_icon()) {
+            touch_icons.generation = generation;
+            touch_icons.requested_button = touch_icons.selected;
+            touch_icons.pending = touch_icons.active = true;
+            touch_icons.notice.clear();
+        } else s.error = tr("Could not open the image picker. The previous icon was kept.");
+    }, picker_available && !touch_icons.pending);
+    r.back().current = choice == -1;
+    r.back().help = tr("Android image picker. Transparency and proportions are preserved. Images are limited to 16 MB and reduced to 128 pixels. Cancel or import failure keeps the previous icon.");
+    for (int i = 1; i <= touch_icon_builtin_count(); ++i) {
+        action(r, "ti.builtin." + std::to_string(i), tr(touch_icon_builtin_name(i)), [i]() { set_touch_icon_choice(i); });
+        r.back().current = choice == i;
+    }
+    action(r, "ti.back", tr("Back"), []() { pop(); });
 }
 void combo_rows(std::vector<Row> &r) {
     static const char *const NAMES[16] = {"A", "B", "X", "Y", "L3", "R3", "L", "R", "ZL", "ZR", "Plus", "Minus", "Left", "Up", "Right", "Down"};
@@ -2928,6 +3012,9 @@ std::vector<Row> rows_for_view(bool *open) {
     std::vector<Row> r;
     if (s.view == View::TouchButtons) { touch_button_rows(r); return r; }
     if (s.view == View::TouchTemplates) { touch_template_rows(r); return r; }
+    if (s.view == View::TemplateDetail) { touch_template_detail_rows(r); return r; }
+    if (s.view == View::TouchIcons) { touch_icon_rows(r); return r; }
+    if (s.view == View::TouchIconEdit) { touch_icon_edit_rows(r); return r; }
     if (s.view == View::ComboEdit) { combo_rows(r); return r; }
     if (s.view == View::PadList) { pad_list_rows(r); return r; }
     if (s.view == View::PadMap) { pad_map_rows(r); return r; }
@@ -3087,9 +3174,9 @@ const PhoneHelp PHONE_HELP[] = {
      "按猎人人数设置集会所任务中大型怪物的体力。加入他人集会所时使用主机的设置。"},
     {"FOV", "How much of the scene you see: higher shows more.", "Cuánto se ve de la escena: un valor mayor muestra más.",
      "镜头可见的场景范围。数值越大，能看到的范围越广。"},
-    {"ShowGuard", "Shows or hides the universal layout's aim (R) button. Its action follows the game's control settings.",
-     "Muestra u oculta el botón de apuntar (R) del diseño universal. Su función depende de los controles del juego.",
-     "显示或隐藏通用布局的瞄准（R）键。按键作用遵循游戏内操作设置。"},
+    {"ShowGuard", "Shows or hides the universal layout's aim (R) button. It keeps all native R functions, follows the game's control settings and can be used at the same time as automatic running.",
+     "Muestra u oculta el botón de apuntar (R) del diseño universal. Conserva todas las funciones originales de R, respeta los controles del juego y puede usarse a la vez que la carrera automática.",
+     "显示或隐藏通用布局的瞄准（R）键。保留原生 R 的全部功能，遵循游戏内操作设置，可与自动跑步同时使用。"},
     {"ShowRanged", "With a bow or a bowgun in hand, in a hunt, the touch controls change to a layout of their own. Its buttons are moved in the editor.",
      "Con un arco o una ballesta en la mano, en una cacería, los controles táctiles pasan a un layout propio. Sus botones se mueven en el editor.",
      "任务中使用弓或弩炮时，切换为专用触控布局。可在触控编辑器中调整按钮位置。"},
@@ -3102,10 +3189,12 @@ const PhoneHelp PHONE_HELP[] = {
      "弩炮轻按切换瞄准镜，弓轻按切换瞄准模式。按住并滑动可向左右、上下调整瞄准方向，松开后停止调整。"},
     {"ShowRangedSpecial", "A bowgun's crouching fire. A bow applies its coating.", "El fuego agachado de la ballesta. El arco aplica su capa.",
      "发送游戏原生的 X+A 组合键：弩炮在游戏允许时进入蹲射，弓用于装填瓶。也可手动按 X+A，按键顺序不限。"},
-    {"ShowAmmo", "Change the ammo or the coating. A swipe up or down on the item bar does it too.", "Cambian la munición o la capa. También se puede deslizar hacia arriba o abajo sobre la barra de ítems.",
-     "切换弹药或瓶。按住箭头可连续切换；在道具栏上向上或向下滑动也可切换。"},
-    {"ShowItemArrows", "Arrows beside the item bar. A swipe on the bar turns it too.", "Flechas a los lados de la barra de ítems. Deslizar sobre la barra también la gira.",
-     "在道具栏两侧显示切换箭头。在道具栏上滑动也可切换道具。"},
+    {"ShowAmmo", "Independent ammo/coating arrows in the universal layout, shown only during quests with a bow or bowgun. Hold to repeat; dragging on an arrow never turns the camera. Move and resize them in the layout editor during a quest.",
+     "Flechas independientes de munición o capa en el diseño universal, solo en misiones con arco o ballesta. Mantén para repetir; arrastrar sobre una flecha nunca gira la cámara. Muévelas y cambia su tamaño en el editor durante una misión.",
+     "通用布局的独立弹药／瓶切换箭头，仅任务内使用弓或弩炮时显示。按住连续切换；在箭头上滑动不转视角。任务内可在布局编辑器中移动、缩放。"},
+    {"ShowItemArrows", "Arrows beside the item bar. Dragging on an arrow never turns the camera; swiping on the item bar still changes the item.",
+     "Flechas a los lados de la barra de objetos. Arrastrar sobre una flecha nunca gira la cámara; deslizar sobre la barra sigue cambiando el objeto.",
+     "显示道具栏两侧的切换箭头。在箭头上滑动不转视角；在道具栏上滑动仍可切换道具。"},
     {"UIAnchor", "On a screen wider than 16:9, where the HUD goes.", "En una pantalla más ancha que 16:9, dónde va el HUD.",
      "屏幕宽于 16:9 时，游戏界面元素的对齐位置。"},
     {"FillScreen", "Movies and menu backdrops fill the screen, with a little cut above and below, instead of bars at the sides.",
@@ -3750,6 +3839,8 @@ std::string view_title() {
                     : s.view == View::Keybinds   ? "Keybinds"
                     : s.view == View::TouchButtons ? "Buttons on the screen"
                     : s.view == View::TouchTemplates ? "Custom touch templates"
+                    : s.view == View::TemplateDetail ? "Template details"
+                    : s.view == View::TouchIcons || s.view == View::TouchIconEdit ? "Touch button icons"
                     : s.view == View::TemplateOverwrite ? "Replace this saved template?"
                     : s.view == View::ComboEdit  ? "Combined button"
                     : s.view == View::PadList    ? "Map a controller"
@@ -4292,6 +4383,7 @@ void settings_panel_before_frame(bool open) {
     }
 }
 void settings_panel(bool *open) {
+    poll_touch_icon(*open);
     if (!*open) {
         textinput_menu_keyboard(false);
         s.editing = false;

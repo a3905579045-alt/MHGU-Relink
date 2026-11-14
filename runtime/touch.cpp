@@ -2,7 +2,7 @@
 // button letter on a small badge.
 //   - left thumb: floating mode hides the idle stick and places it at the initial touch; fixed mode uses the saved
 //     layout position. The knob follows the thumb inside the rim; a light tilt walks, a full one runs
-//     AutoR optionally holds the native R button at full tilt; it never sends camera input
+//     AutoR optionally requests running at full tilt, separately from the native R button; it never sends camera input
 //   - one common layout in town, quests and every weapon: A / X attack buttons, R aim, B dodge,
 //     Y sheathe, optional shoulders and six named combo buttons; no layout-cycle control
 //   - while a menu of the game's is open (the pause menu, the item pouch, a shop, a yes / no: its windows are drawn
@@ -35,11 +35,14 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <memory>
+#include <vector>
 
-#include "imgui.h"
+#include "imgui_internal.h"
 
 #include "config.h"
 extern "C" {
+#include "../updater/updater.h"
 uint64_t plat_now_ns(void);
 extern volatile uint64_t g_town_ns;  // (hle/quickhunt.c: a town's walking-around update)
 int weapon_drawn(void);  // (hle/weapon.c: 1 the weapon out, 0 sheathed, -1 not known)
@@ -127,8 +130,8 @@ const Def DEFS[C_COUNT] = {
     {"rspecial", "Crouching fire / coating", I_CROUCH, "", 0, true, .33f, .445f, .058f},
     {"rdodge", "Dodge  B", I_DODGE, "B", B(BTN_B), true, .085f, .10f, .056f},
     {"rsheathe", "Sheathe  Y", I_SHEATHE, "Y", B(BTN_Y), true, .175f, .47f, .046f},
-    {"ammo_up", "Next ammo", I_UP, "", 0, true, .56f, .30f, .05f},
-    {"ammo_down", "Previous ammo", I_DOWN, "", 0, true, .56f, .13f, .05f},
+    {"ammo_up", "Next ammo", I_UP, "", 0, true, .94f, .44f, .05f},
+    {"ammo_down", "Previous ammo", I_DOWN, "", 0, true, .94f, .28f, .05f},
     {"weapon_layout", "Weapon layout", I_LETTER, "GS", 0, false, .08f, .12f, .046f},
     {"dpad_toggle", "D-pad visibility", I_DPAD, "", 0, false, .18f, .79f, .043f},
     {"stick", "Movement", I_STICK, "", 0, false, .29f, .27f, .115f},
@@ -173,6 +176,7 @@ int ranged_layout_profile(int profile) {
     return config_live_touch_show(TB_RANGED) ? ranged_profile(profile) : 0;
 }
 bool is_ranged(int i) { return i >= C_RFIRE && i <= C_AMMO_DOWN; }
+bool is_ammo(int i) { return i == C_AMMO_UP || i == C_AMMO_DOWN; }
 int show_setting(int i) {  // the [Touch] Show* a control follows (the settings button has none: it is the way back to them)
     switch (i) {
     case C_ATTACK: case C_HEAVY: case C_LIGHT: case C_CORNER: case C_MPILL: case C_FX: return TB_ATTACKS;
@@ -208,6 +212,7 @@ bool classic_control(int i) {
            i == C_HDPAD || i == C_DPAD_TOGGLE || i == C_STICK || i == C_SETTINGS || is_combo(i);
 }
 bool in_mode(int i, bool menu, bool in_quest, int ranged = -1) {
+    if (is_ammo(i)) return in_quest && !menu && config_live_touch_show(TB_AMMO) && weapon_ranged(weapon_hunter());
     if (i == C_LAYOUT || is_ranged(i)) return false;
     int show = show_setting(i);
     if (show >= 0 && !config_live_touch_show(show)) return false;
@@ -281,11 +286,61 @@ uint64_t ranged_buttons(int c, int drawn, int ranged) {
     }
 }
 
+const int ICON_CONTROLS[TOUCH_ICON_BUTTON_COUNT] = {
+    C_HEAVY, C_LIGHT, C_DODGE, C_SHEATHE, C_R, C_L, C_ZL, C_ZR, C_MENU, C_HMINUS, C_MAP, C_R3,
+    C_HDPAD, C_DPAD_TOGGLE, C_STICK, C_SETTINGS, C_COMBO, C_COMBO+1, C_COMBO+2, C_COMBO+3, C_COMBO+4, C_COMBO+5,
+    C_AMMO_UP, C_AMMO_DOWN
+};
+const struct { Icon icon; const char *name; } BUILTIN_ICONS[] = {
+    {I_ATTACK, "Sword"}, {I_DODGE, "Dodge"}, {I_SHIELD, "Shield"}, {I_BURST, "Burst"},
+    {I_TARGET_SELECT, "Target"}, {I_CAMERA, "Camera"}, {I_MENU, "Menu"}, {I_MAP, "Map"},
+    {I_GEAR, "Settings"}, {I_SHEATHE, "Sheathe"}, {I_RUN, "Run"}, {I_SCOPE, "Crosshair"},
+    {I_SHOT, "Shot"}, {I_BOW, "Bow"}
+};
+const int BUILTIN_ICON_COUNT = sizeof BUILTIN_ICONS / sizeof BUILTIN_ICONS[0];
+struct IconChoice { int choice; char hash[TOUCH_ICON_HASH_SIZE]; };
+bool icon_hash_valid(const char *hash) {
+    if (!hash || strlen(hash) != 64) return false;
+    for (int i = 0; i < 64; ++i)
+        if (!((hash[i] >= '0' && hash[i] <= '9') || (hash[i] >= 'a' && hash[i] <= 'f'))) return false;
+    return true;
+}
+// Only this bounded, decoded format crosses into native rendering. Paths never come from a template.
+bool load_icon_pixels(const char *hash, std::vector<unsigned char> &pixels, int *width, int *height) {
+    if (!icon_hash_valid(hash)) return false;
+    char path[96];
+    snprintf(path, sizeof path, "touch_icons/%s.rgba", hash);
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    unsigned char header[8];
+    bool ok = fread(header, 1, sizeof header, f) == sizeof header && !memcmp(header, "TICO", 4);
+    int w = ok ? header[4] | header[5] << 8 : 0, h = ok ? header[6] | header[7] << 8 : 0;
+    ok = ok && w >= 1 && w <= 128 && h >= 1 && h <= 128;
+    if (ok) {
+        pixels.resize((size_t)w * h * 4);
+        ok = fread(pixels.data(), 1, pixels.size(), f) == pixels.size() && fgetc(f) == EOF && !ferror(f);
+    }
+    fclose(f);
+    if (ok) {
+        Sha256 sha;
+        char digest[65];
+        sha256_init(&sha);
+        sha256_update(&sha, header, sizeof header);
+        sha256_update(&sha, pixels.data(), pixels.size());
+        sha256_hex(&sha, digest);
+        ok = !strcmp(hash, digest);
+    }
+    if (ok) *width = w, *height = h;
+    else pixels.clear();
+    return ok;
+}
+
 struct Layout {
     float x[C_COUNT], y[C_COUNT], scale[C_COUNT];
     float zx[TZ_COUNT], zy[TZ_COUNT];  // the moved HUD parts' offsets (canvas units: g_touch_zone_dx / dy)
     int style;                         // STYLE_*
     int weapon_profile;                // reserved slots bind to one of the original 15 weapons
+    IconChoice icons[C_LAID];           // zero-initialized legacy layouts keep their original faces
 };
 bool from_right(const Layout &l, int i) {
     return DEFS[i].right && !(l.style == STYLE_CLASSIC && (i == C_L || i == C_ZL));
@@ -297,6 +352,13 @@ void migrate_ranged_guard(Layout &l, int profile) {
         l.x[C_R] = .58f, l.y[C_R] = .78f;
 }
 const char *const ZONE_KEY[TZ_COUNT] = {"hud_items", "hud_arts", "hud_target"};
+void migrate_common_ammo(Layout &l) {
+    // Previously hidden common arrows used positions occupied by the combo grid and R.
+    // Move only the untouched old defaults; saved custom placements remain independent.
+    for (int c : {C_AMMO_UP, C_AMMO_DOWN})
+        if (l.x[c] == .56f && l.y[c] == (c == C_AMMO_UP ? .30f : .13f) && l.scale[c] == 1.0f)
+            l.x[c] = DEFS[c].x, l.y[c] = DEFS[c].y;
+}
 Layout defaults(int profile) {
     Layout l = {};
     l.weapon_profile = profile < TOUCH_WEAPON_LAYOUTS ? profile : -1;
@@ -374,10 +436,13 @@ bool save_layout_file(const Layout &l, const char *path, const char *name = null
     snprintf(temp, sizeof temp, "%s.tmp", path);
     FILE *f = fopen(temp, "w");
     if (!f) { fprintf(stderr, "[touch] could not save %s\n", path); return false; }
-    fprintf(f, "layout_version 1\n");
+    fprintf(f, "layout_version 3\n");
     if (name) fprintf(f, "template_name %s\n", name);
     fprintf(f, "# touch controls: name, centre (screen heights from its edge and the bottom), size\n");
     for (int i = 0; i < C_LAID; i++) fprintf(f, "%s %.4f %.4f %.3f\n", DEFS[i].key, l.x[i], l.y[i], l.scale[i]);
+    for (int i : ICON_CONTROLS)
+        fprintf(f, "icon %s %d %s\n", DEFS[i].key, l.icons[i].choice,
+                l.icons[i].choice == -1 ? l.icons[i].hash : "-");
     fprintf(f, "# the game's HUD parts moved for touch: name, offset from their place (the game's 1280x720 units), 1\n");
     for (int k = 0; k < TZ_COUNT; k++) fprintf(f, "%s %.1f %.1f 1\n", ZONE_KEY[k], l.zx[k], l.zy[k]);
     fprintf(f, "attack_style %d 0 1\n", l.style);
@@ -411,12 +476,30 @@ bool load_layout_file(Layout *out, const char *path, char *name = nullptr, Confi
     FILE *f = fopen(path, "r");
     if (!f) return false;
     Layout layout = defaults(COMMON_BASE);
-    bool controls[C_LAID] = {}, zones[TZ_COUNT] = {}, version = false, named = false;
+    bool controls[C_LAID] = {}, zones[TZ_COUNT] = {}, icons[C_LAID] = {}, named = false, invalid_icon = false;
+    int version = 0;
     bool masks[TOUCH_COMBOS] = {}, pads[TOUCH_COMBOS] = {}, names[TOUCH_COMBOS] = {};
     char line[160], key[32], stored_name[TOUCH_TEMPLATE_NAME_MAX] = {};
     while (fgets(line, sizeof line, f)) {
         line[strcspn(line, "\r\n")] = 0;
-        if (!strcmp(line, "layout_version 1")) { version = true; continue; }
+        if (!strcmp(line, "layout_version 1")) { version = 1; continue; }
+        if (!strcmp(line, "layout_version 2")) { version = 2; continue; }
+        if (!strcmp(line, "layout_version 3")) { version = 3; continue; }
+        if (!strncmp(line, "icon ", 5)) {
+            int choice;
+            char hash[65], extra;
+            bool matched = false;
+            if (sscanf(line, "icon %31s %d %64s %c", key, &choice, hash, &extra) == 3 &&
+                ((choice == -1 && icon_hash_valid(hash)) || (choice >= 0 && choice <= BUILTIN_ICON_COUNT && !strcmp(hash, "-")))) {
+                for (int i : ICON_CONTROLS) if (!strcmp(key, DEFS[i].key) && !icons[i]) {
+                    layout.icons[i].choice = choice;
+                    if (choice == -1) SDL_strlcpy(layout.icons[i].hash, hash, sizeof layout.icons[i].hash);
+                    icons[i] = matched = true;
+                }
+            }
+            if (!matched) invalid_icon = true;
+            continue;
+        }
         if (!strncmp(line, "template_name ", 14)) {
             named = template_name_valid(line + 14);
             if (named) SDL_utf8strlcpy(stored_name, line + 14, sizeof stored_name);
@@ -442,9 +525,10 @@ bool load_layout_file(Layout *out, const char *path, char *name = nullptr, Confi
             pads[index - 1] = true;
             continue;
         }
-        if (combos && sscanf(line, "combo_name %d %n", &index, &at) == 1 && at > 0 &&
-                index >= 1 && index <= TOUCH_COMBOS && strlen(line + at) < TOUCH_COMBO_NAME_MAX) {
-            SDL_utf8strlcpy(combos->touch_combo_name[index - 1], line + at, TOUCH_COMBO_NAME_MAX);
+        // Consume the writer's one separator; all remaining spaces belong to the name.
+        if (combos && sscanf(line, "combo_name %d%n", &index, &at) == 1 && at > 0 && line[at] == ' ' &&
+                index >= 1 && index <= TOUCH_COMBOS && strlen(line + at + 1) < TOUCH_COMBO_NAME_MAX) {
+            SDL_utf8strlcpy(combos->touch_combo_name[index - 1], line + at + 1, TOUCH_COMBO_NAME_MAX);
             names[index - 1] = true;
             continue;
         }
@@ -461,16 +545,19 @@ bool load_layout_file(Layout *out, const char *path, char *name = nullptr, Confi
                 zones[i] = true;
             }
     }
-    bool ok = !ferror(f) && version && (!name || named);
+    bool ok = !ferror(f) && version && !invalid_icon && (!name || named);
     fclose(f);
     for (bool present : controls) ok = ok && present;
     for (bool present : zones) ok = ok && present;
+    if (version >= 2) for (int i : ICON_CONTROLS)
+        if (version >= 3 || !is_ammo(i)) ok = ok && icons[i];
     if (combos) {
         for (int i = 0; i < TOUCH_COMBOS; ++i) ok = ok && masks[i] && pads[i] && names[i];
         char error[192];
         ok = ok && config_validate(combos, error, sizeof error);
     }
     if (!ok) return false; // A truncated or corrupt snapshot must not silently overwrite a valid layout.
+    if (version < 3) migrate_common_ammo(layout);
     *out = layout;
     if (name) SDL_utf8strlcpy(name, stored_name, TOUCH_TEMPLATE_NAME_MAX);
     return true;
@@ -482,7 +569,10 @@ void load_common_layout(Layout *layout) {
     if (f) {
         fclose(f);
         load_layout_file(layout, COMMON_PATH);
-    } else load_layout(layout, COMMON_BASE); // Import the former town melee geometry without overwriting old files.
+    } else {
+        load_layout(layout, COMMON_BASE); // Import the former town melee geometry without overwriting old files.
+        migrate_common_ammo(*layout);
+    }
     layout->style = STYLE_SEPARATE;
     layout->weapon_profile = -1;
 }
@@ -777,7 +867,7 @@ struct Finger {
     float x, y, x0, y0;  // pixels: now, where it landed
     uint64_t t0, step_at;
     float swipe, swipe_y;  // the item bar, a menu's cursor: pixels swiped since the last step
-    bool moved, done, bar_open, bow_drag_blocked, camera_drag_blocked;
+    bool moved, done, bar_open, bow_drag_blocked, camera_drag_blocked, item_arrow;
     uint64_t btn;          // a control of the ranged layout: what it pressed when it landed (the weapon may go out under it)
 };
 struct Pulse {
@@ -803,7 +893,8 @@ struct State {
     float tap_x, tap_y;
     Pulse pulse[6];
     Pulse ammo_pulse;        // one touch-owned ammo press; sliding never fills the generic pulse queue
-    bool run;                // the thumb is past the stick's rim: running (R held)
+    bool ammo_arrow_source, item_arrow_source;  // retain pending ownership after the finger lifts
+    bool run;                // the thumb is past the stick's rim: request running
     uint64_t run_idle;
     float fx, fy;            // the stick's thumb where it is (the knob stops at the rim)
     bool lock;               // the hunt camera follows the selected monster
@@ -830,6 +921,7 @@ int control_profile(const State &) { return UNIVERSAL_LAYOUT; }
 int display_ranged(const State &) { return 0; }
 std::mutex g_lock;
 State g_s;
+uint64_t g_layout_generation;
 std::atomic<bool> g_lock_follow;  // (touch_lock_buttons -> the hunt camera: follow the monster now)
 std::atomic<bool> g_lock_shots;   // (the lock-on is on, in a hunt: hle/mousecam.c turns a bow's or a gun's shots)
 // a click on the phone's vibrator, asked for under g_lock and made once it is released (a JNI / binder call: the
@@ -847,7 +939,7 @@ const uint64_t LOCK_AFTER_DRAG = 400 * MS, MIN_PRESS = 70 * MS;
 void recompute_held(State &s);
 void reset_bow_drag(State &s, bool resume = false);
 bool item_gesture(const Finger &f) {
-    return f.kind == F_ITEM || (f.kind == F_BUTTON && (f.ctl == C_AMMO_UP || f.ctl == C_AMMO_DOWN));
+    return f.kind == F_ITEM || (f.kind == F_BUTTON && is_ammo(f.ctl));
 }
 bool bar_held(const State &s) {
     for (const Finger &f : s.f) if (item_gesture(f) && !f.done && f.bar_open) return true;
@@ -862,6 +954,7 @@ void cancel_item_gestures(State &s) {
     for (Finger &f : s.f) if (item_gesture(f)) f = {};
     s.ammo_pulse = {};
     s.bar_since = s.ammo_ready = s.ammo_hold = 0;
+    s.ammo_arrow_source = s.item_arrow_source = false;
     recompute_held(s);
 }
 
@@ -873,11 +966,13 @@ void clear_layout_input(State &s) {
     s.tap_ns = s.step_ns = 0;
     s.ammo_ready = s.ammo_hold = s.bar_since = 0;
     s.ammo_pulse = {};
+    s.ammo_arrow_source = s.item_arrow_source = false;
     for (Finger &f : s.f) f = {};
     for (Pulse &p : s.pulse) p = {};
 }
 
 void install_common_layout(State &s, const Layout &layout) {
+    ++g_layout_generation;
     clear_layout_input(s);
     s.layout = layout;
     s.layout.style = STYLE_SEPARATE;
@@ -910,17 +1005,19 @@ void pulse(State &s, uint64_t buttons, uint64_t ns, uint64_t after = 0, bool dpa
 // A step of the ammo or the coating: L held, X the next one, B the one before, and L let go confirms it (the game's own).
 // The game takes L only after a while: X 220 ms after it reloaded or did nothing, 310 ms after it changed the ammo (a
 // Motorola g06). More steps while L is held need no wait
-bool ammo_step(State &s, int dir) {
+bool ammo_step(State &s, int dir, bool from_arrow = false) {
     uint64_t now = SDL_GetTicksNS();
     uint64_t buttons = dir > 0 ? B(BTN_X) : B(BTN_B);
     if (s.ammo_pulse.until > now) {
         if (now >= s.ammo_pulse.from) return false;
         s.ammo_pulse.buttons = buttons;  // a reversal replaces an unsent step, never queues behind it
+        s.ammo_arrow_source = from_arrow;
         return true;
     }
     if (now < s.ammo_ready) return false;
     uint64_t at = std::max(now + 20 * MS, s.bar_since + 380 * MS);
     s.ammo_pulse = {buttons, at, at + 80 * MS, false};
+    s.ammo_arrow_source = from_arrow;
     s.ammo_ready = at + 170 * MS;
     s.ammo_hold = at + 320 * MS;
     return true;
@@ -1079,11 +1176,12 @@ void item_swipe(State &s, Finger &f, uint64_t now) {
     if (fabsf(distance) < step) return;
     open_bar(s, f, now);
     if (f.part == 2) {
-        if (!ammo_step(s, distance < 0 ? 1 : -1)) return;
+        if (!ammo_step(s, distance < 0 ? 1 : -1, f.kind == F_BUTTON && is_ammo(f.ctl))) return;
     } else {
         if (now < f.step_at) return;
         s.item_dir = f.swipe > 0 ? 1 : -1;
         itembar_touch_scroll(s.item_dir);
+        s.item_arrow_source = f.item_arrow;
         s.item_flash = now + 200 * MS;
         f.step_at = now + 70 * MS;
     }
@@ -1136,6 +1234,7 @@ void editor_panel(float w, float h, Rect *panel, Rect btn[E_COUNT]) {
 
 void edit_begin(State &s) {
     if (s.edit) { s.edit_request = false; return; }
+    ++g_layout_generation;
     reset_bow_drag(s);
     cancel_item_gestures(s);
     s.edit = true, s.edit_request = false, s.sel = -1, s.pinch = false;
@@ -1293,11 +1392,18 @@ extern "C" bool touch_event(const SDL_Event *e) {
         if (!classic && (c == C_R || c == C_DODGE || c == C_CORNER || c == C_RSECOND || c == C_AMMO_UP || c == C_AMMO_DOWN) && item.in(x, y))
             c = -1;  // (narrow screens: their default places, and B's in layouts saved before, reach the item bar)
         int arrow = 0;
-        if (c < 0 && item.ok && !s.menu && config_live_touch_show(TB_ITEM_ARROWS))
+        // These arrows are drawn above normal controls: give their entire gesture the same ownership.
+        if (item.ok && !s.menu && config_live_touch_show(TB_ITEM_ARROWS))
             for (int d = -1; d <= 1; d += 2) {
                 Geo g = item_arrow(item, d, s.h);
                 if (hypotf(x - g.c.x, y - g.c.y) < g.r * 1.2f) arrow = d;
             }
+        if (arrow) c = -1;
+        else for (int ammo : {C_AMMO_DOWN, C_AMMO_UP}) {
+            if (!in_mode(ammo, s.menu, s.in_quest, 0)) continue;
+            Geo g = place(s.layout, ammo, s.w, s.h);
+            if (hypotf(x - g.c.x, y - g.c.y) < g.r * 1.2f) { c = ammo; part = 0; break; }
+        }
         if (classic && c == C_STICK) {
             f->kind = s.stick_on ? F_MENU : F_STICK;
             f->ctl = c;
@@ -1318,21 +1424,25 @@ extern "C" bool touch_event(const SDL_Event *e) {
                 f->done = true;
             }
             f->btn = is_ranged(c) ? ranged_buttons(c, s.drawn, ranged_layout_profile(control_profile(s))) : 0;
-            if (c == C_AMMO_UP || c == C_AMMO_DOWN) {
+            if (is_ammo(c)) {
                 itembar_touch_cancel();
+                s.item_arrow_source = false;
                 f->part = 2;
                 if (s.menu) f->done = true;
-                else { open_bar(s, *f, now); ammo_step(s, c == C_AMMO_UP ? 1 : -1); }
+                else { open_bar(s, *f, now); ammo_step(s, c == C_AMMO_UP ? 1 : -1, true); }
             }
             tap_due();
         } else if (arrow) {
             itembar_touch_cancel();
             f->kind = F_ITEM, f->part = 1;
+            f->item_arrow = true;
             open_bar(s, *f, now);
             itembar_touch_scroll(arrow), s.item_dir = arrow, s.item_flash = now + 200 * MS, tap_due();
+            s.item_arrow_source = true;
             f->step_at = now + 70 * MS;
         } else if (!s.menu && item.in(x, y)) {
             itembar_touch_cancel();
+            s.item_arrow_source = false;
             f->kind = F_ITEM;
         } else if (!s.menu && target.in(x, y)) {
             f->kind = F_TARGET;
@@ -1561,19 +1671,29 @@ extern "C" uint64_t touch_input(bool pad_connected, bool typing, uint64_t *butto
         }
     }
     g_touch_hud = visible && config_live_touch_hud();
-    bool cancel_bar = false;
+    bool ammo_hidden = !in_mode(C_AMMO_UP, s.menu, s.in_quest, ranged);
+    bool item_hidden = !config_live_touch_show(TB_ITEM_ARROWS);
+    if (ammo_hidden && s.ammo_arrow_source) {
+        s.ammo_pulse = {};
+        s.ammo_ready = s.ammo_hold = 0;
+        s.ammo_arrow_source = false;
+    }
+    if (item_hidden && s.item_arrow_source) {
+        itembar_touch_cancel();
+        s.item_arrow_source = false;
+    }
     for (Finger &f : s.f) {
+        if ((ammo_hidden && f.kind == F_BUTTON && is_ammo(f.ctl)) ||
+            (item_hidden && f.kind == F_ITEM && f.item_arrow)) f = {};
         if (f.kind == F_RSTICK && !in_mode(C_RSTICK, s.menu, s.in_quest, ranged)) f.kind = F_NONE;
         if (f.kind == F_BUTTON && ((!visible && f.ctl != C_SETTINGS) ||
                                  !in_mode(f.ctl, s.menu, s.in_quest, ranged_layout_profile(control_profile(s))))) {
-            if (item_gesture(f)) cancel_bar = true;
             f.done = true;
         }
         // The press which draws a sheathed bowgun must end before X can become its reload action.
         if (f.kind == F_BUTTON && f.ctl == C_RFIRE && ranged == WEAPON_BOWGUN && s.drawn == 1 && f.btn == B(BTN_X))
             f.done = true;
     }
-    if (cancel_bar) cancel_item_gestures(s);
     validate_bow_drag(s);
     if (visible && !menu && !s.menu && !s.edit) {
         for (Finger &f : s.f) {
@@ -1581,7 +1701,7 @@ extern "C" uint64_t touch_input(bool pad_connected, bool typing, uint64_t *butto
             if (f.kind == F_ITEM && !f.bar_open && now - f.t0 >= 220 * MS) open_bar(s, f, now);
             item_swipe(s, f, now);
             if (f.kind == F_BUTTON && !f.moved && now >= s.ammo_ready)
-                ammo_step(s, f.ctl == C_AMMO_UP ? 1 : -1);
+                ammo_step(s, f.ctl == C_AMMO_UP ? 1 : -1, true);
         }
     }
     if (!bar_held(s) && now >= s.ammo_hold) s.bar_since = s.ammo_ready = s.ammo_hold = 0;
@@ -1641,7 +1761,6 @@ extern "C" uint64_t touch_input(bool pad_connected, bool typing, uint64_t *butto
         float r = DEFS[C_STICK].r * s.layout.scale[C_STICK] * s.h;
         // A small edge hysteresis prevents repeated R presses while the thumb rests on the rim.
         s.run = r > 0 && hypotf(s.fx - s.bx, s.fy - s.by) >= r * (was_run ? .95f : .98f);
-        if (s.run) touch_b |= B(BTN_R), *buttons |= B(BTN_R);
     }
     if (classic || s.layout_profile == UNIVERSAL_LAYOUT) {
         if (s.stick_on && s.h > 0) {
@@ -1698,6 +1817,55 @@ extern "C" void touch_edit_begin(void) {
 extern "C" void touch_edit_cancel(void) {  // (the settings menu stayed open: "Cancel" in its unsaved-changes dialog)
     std::lock_guard<std::mutex> l(g_lock);
     g_s.edit_request = false;
+}
+
+extern "C" bool touch_running(void) {
+    std::lock_guard<std::mutex> l(g_lock);
+    return g_s.run;
+}
+
+extern "C" const char *touch_icon_button_name(int button) {
+    if (button < 0 || button >= TOUCH_ICON_BUTTON_COUNT) return "";
+    static const char *const combo_names[] = {"Combined button 1", "Combined button 2", "Combined button 3",
+        "Combined button 4", "Combined button 5", "Combined button 6"};
+    return button >= 16 && button < 16 + TOUCH_COMBOS ? combo_names[button - 16] : DEFS[ICON_CONTROLS[button]].name;
+}
+extern "C" int touch_icon_builtin_count(void) { return BUILTIN_ICON_COUNT; }
+extern "C" const char *touch_icon_builtin_name(int choice) {
+    return choice >= 1 && choice <= BUILTIN_ICON_COUNT ? BUILTIN_ICONS[choice - 1].name : "";
+}
+extern "C" uint64_t touch_layout_generation(void) {
+    std::lock_guard<std::mutex> l(g_lock);
+    ensure_loaded(g_s);
+    return g_layout_generation;
+}
+extern "C" bool touch_icon_get(int button, int *choice, char hash[TOUCH_ICON_HASH_SIZE]) {
+    if (button < 0 || button >= TOUCH_ICON_BUTTON_COUNT) return false;
+    std::lock_guard<std::mutex> l(g_lock);
+    ensure_loaded(g_s);
+    const IconChoice &ic = g_s.layout.icons[ICON_CONTROLS[button]];
+    if (choice) *choice = ic.choice;
+    if (hash) SDL_strlcpy(hash, ic.hash, TOUCH_ICON_HASH_SIZE);
+    return true;
+}
+extern "C" bool touch_icon_set(int button, int choice, const char *hash, uint64_t expected_generation) {
+    if (button < 0 || button >= TOUCH_ICON_BUTTON_COUNT || choice < -1 || choice > BUILTIN_ICON_COUNT) return false;
+    std::lock_guard<std::mutex> l(g_lock);
+    ensure_loaded(g_s);
+    if (g_s.edit || expected_generation != g_layout_generation) return false;
+    if (choice == -1) {
+        std::vector<unsigned char> pixels;
+        int w, h;
+        if (!load_icon_pixels(hash, pixels, &w, &h)) return false;
+    }
+    Layout layout = g_s.layout;
+    IconChoice &ic = layout.icons[ICON_CONTROLS[button]];
+    ic = {};
+    ic.choice = choice;
+    if (choice == -1) SDL_strlcpy(ic.hash, hash, sizeof ic.hash);
+    if (!save_layout_file(layout, COMMON_PATH)) return false;
+    install_common_layout(g_s, layout);
+    return true;
 }
 
 extern "C" bool touch_template_info(int slot, char *name, int name_size) {
@@ -1792,6 +1960,7 @@ extern "C" void touch_reset(void) {
     s.stick_on = false, s.run = false, s.held = 0, s.cam_dx = s.cam_dy = 0, s.pinch = false;
     s.ammo_hold = s.ammo_ready = s.bar_since = 0;
     s.ammo_pulse = {};
+    s.ammo_arrow_source = s.item_arrow_source = false;
 }
 
 extern "C" void touch_hud_piece(int zone, float game_x, float game_y, float canvas_x, float canvas_y,
@@ -1938,6 +2107,9 @@ void padlock(ImDrawList *dl, ImVec2 c, float s, bool closed, ImU32 col, ImU32 de
 void icon(ImDrawList *dl, Icon ic, ImVec2 c, float r, ImU32 col, ImU32 deep) {
     float s = r * .62f;
     switch (ic) {
+    case I_ATTACK:
+        sword_along(dl, c, PILL_U, r * 1.45f, r * .3f, r * .6f, col, deep, true);
+        break;
     case I_DODGE: {  // a roll: a curled arrow with motion lines
         float ar = .5f * s;
         dl->PathArcTo(ImVec2(c.x + .08f * s, c.y), ar, PI * .85f, PI * 2.35f, 24);
@@ -2120,6 +2292,88 @@ void icon(ImDrawList *dl, Icon ic, ImVec2 c, float r, ImU32 col, ImU32 deep) {
     default:
         break;
     }
+}
+
+struct IconTexture {
+    char hash[65] = {};
+    ImTextureData texture;
+    int last_frame = 0, retry_frame = 0;
+    bool registered = false;
+};
+std::vector<std::unique_ptr<IconTexture>> g_icon_textures;
+ImGuiContext *g_icon_context;
+void icon_texture_shutdown(ImGuiContext *, ImGuiContextHook *) {
+    // The renderer has already released GPU resources before ImGui invokes its shutdown hooks.
+    for (auto &entry : g_icon_textures)
+        if (entry->registered) ImGui::UnregisterUserTexture(&entry->texture);
+    g_icon_textures.clear();
+    g_icon_context = nullptr;
+}
+void icon_textures_frame() {
+    if (!g_icon_context) {
+        g_icon_context = ImGui::GetCurrentContext();
+        ImGuiContextHook hook = {};
+        hook.Type = ImGuiContextHookType_Shutdown;
+        hook.Callback = icon_texture_shutdown;
+        ImGui::AddContextHook(g_icon_context, &hook);
+    }
+    int frame = ImGui::GetFrameCount();
+    for (auto it = g_icon_textures.begin(); it != g_icon_textures.end();) {
+        IconTexture &entry = **it;
+        ImTextureData &tex = entry.texture;
+        int age = frame - entry.last_frame;
+        // Several complete snapshots must have passed before requesting destruction. Vulkan's backend
+        // additionally waits ImageCount frames, so neither the previous g_snap nor in-flight draws use it.
+        if (age > 8 && !tex.WantDestroyNextFrame) {
+            tex.WantDestroyNextFrame = true;
+            if (tex.TexID == ImTextureID_Invalid && !tex.BackendUserData) tex.SetStatus(ImTextureStatus_Destroyed);
+            else tex.SetStatus(ImTextureStatus_WantDestroy);
+        }
+        if (tex.WantDestroyNextFrame) tex.UnusedFrames = age;
+        if (tex.WantDestroyNextFrame && tex.Status == ImTextureStatus_Destroyed) {
+            if (entry.registered) ImGui::UnregisterUserTexture(&tex);
+            it = g_icon_textures.erase(it);
+        } else ++it;
+    }
+}
+ImTextureData *icon_texture(const char *hash) {
+    int frame = ImGui::GetFrameCount();
+    IconTexture *entry = nullptr;
+    for (auto &candidate : g_icon_textures)
+        if (!strcmp(candidate->hash, hash) && !candidate->texture.WantDestroyNextFrame) { entry = candidate.get(); break; }
+    if (!entry) {
+        // A rapid sequence of template changes cannot keep an unbounded number of GPU textures alive.
+        if (g_icon_textures.size() >= 64) return nullptr;
+        g_icon_textures.emplace_back(new IconTexture);
+        entry = g_icon_textures.back().get();
+        SDL_strlcpy(entry->hash, hash, sizeof entry->hash);
+    }
+    entry->last_frame = frame;
+    if (!entry->registered && frame >= entry->retry_frame) {
+        std::vector<unsigned char> pixels;
+        int w, h;
+        if (!load_icon_pixels(hash, pixels, &w, &h)) { entry->retry_frame = frame + 60; return nullptr; }
+        entry->texture.Create(ImTextureFormat_RGBA32, w, h);
+        memcpy(entry->texture.Pixels, pixels.data(), pixels.size());
+        entry->texture.UseColors = true;
+        ImGui::RegisterUserTexture(&entry->texture);
+        entry->registered = true;
+    }
+    return entry->registered ? &entry->texture : nullptr;
+}
+bool custom_icon(ImDrawList *dl, const IconChoice &choice, ImVec2 c, float r, ImU32 col, float a) {
+    if (choice.choice > 0 && choice.choice <= BUILTIN_ICON_COUNT) {
+        icon(dl, BUILTIN_ICONS[choice.choice - 1].icon, c, r, col, fade(DEEP, a));
+        return true;
+    }
+    if (choice.choice != -1) return false;
+    ImTextureData *tex = icon_texture(choice.hash);
+    if (!tex) return false; // Missing or corrupt resource: preserve the reference but show the default face.
+    float scale = r * 1.38f / std::max(tex->Width, tex->Height);
+    ImVec2 half(tex->Width * scale * .5f, tex->Height * scale * .5f);
+    dl->AddImage(tex->GetTexRef(), ImVec2(c.x-half.x, c.y-half.y), ImVec2(c.x+half.x, c.y+half.y),
+                 ImVec2(0, 0), ImVec2(1, 1), fade(IM_COL32_WHITE, a));
+    return true;
 }
 
 // a disc: a soft shadow, the bronze ring with a gold rule and four studs, the dark face; pressed, it lights up
@@ -2384,7 +2638,7 @@ void dpad(ImDrawList *dl, Geo g, int part, float a) {
     }
 }
 
-void stick(ImDrawList *dl, ImVec2 base, ImVec2 knob, float r, float a, bool on) {
+void stick(ImDrawList *dl, ImVec2 base, ImVec2 knob, float r, float a, bool on, const IconChoice *choice = nullptr) {
     float kr = r * KNOB;
     dl->AddCircleFilled(base, r, fade(IM_COL32(10, 7, 5, 255), a * (on ? .42f : .26f)), 48);
     dl->AddCircle(base, r, fade(BRONZE, a), 48, r * .07f);
@@ -2398,6 +2652,7 @@ void stick(ImDrawList *dl, ImVec2 base, ImVec2 knob, float r, float a, bool on) 
         dl->AddConvexPolyFilled(q, 4, fade(GOLD, a * .8f));
     }
     disc(dl, knob, kr, on, a);
+    if (choice && custom_icon(dl, *choice, knob, kr, fade(GOLD, a), a)) return;
     float d = kr * .32f;
     ImVec2 q[4] = {ImVec2(knob.x, knob.y - d), ImVec2(knob.x + d, knob.y), ImVec2(knob.x, knob.y + d), ImVec2(knob.x - d, knob.y)};
     dl->AddConvexPolyFilled(q, 4, fade(GOLD, a));
@@ -2436,7 +2691,7 @@ void control(ImDrawList *dl, ImFont *font, const Layout &l, int i, float w, floa
     }
     if (i == C_STICK) {
         if (s.stick_on && !s.edit) {
-            stick(dl, ImVec2(s.bx, s.by), ImVec2(s.kx, s.ky), g.r, a, true);
+            stick(dl, ImVec2(s.bx, s.by), ImVec2(s.kx, s.ky), g.r, a, true, &l.icons[i]);
             if (s.run) {  // (running: a gold ring round the rim, and streaks behind the knob)
                 dl->AddCircle(ImVec2(s.bx, s.by), g.r * 1.12f, fade(GLOW, a * .85f), 48, g.r * .07f);
                 float dx = s.kx - s.bx, dy = s.ky - s.by, n = std::max(1.0f, hypotf(dx, dy));
@@ -2448,7 +2703,7 @@ void control(ImDrawList *dl, ImFont *font, const Layout &l, int i, float w, floa
                 }
             }
         }
-        else if (s.edit || !floating_stick_enabled(s)) stick(dl, g.c, g.c, g.r, a * .8f, false);
+        else if (s.edit || !floating_stick_enabled(s)) stick(dl, g.c, g.c, g.r, a * .8f, false, &l.icons[i]);
         return;
     }
     int mask = 0;
@@ -2459,6 +2714,24 @@ void control(ImDrawList *dl, ImFont *font, const Layout &l, int i, float w, floa
                                   : is_dpad(i) ? f.part : 1;
             if (i == C_HEAVY && f.ctl == C_LIGHT && f.part) mask |= 1;  // (the seam between them: both lit)
         }
+    if (i < C_LAID && l.icons[i].choice) {
+        // Probe the custom asset before replacing the native face, so fallback is visually identical.
+        bool available = l.icons[i].choice > 0 || icon_texture(l.icons[i].hash);
+        if (available) {
+            float r = mask ? g.r * .95f : g.r;
+            disc(dl, g.c, r, mask != 0, a);
+            custom_icon(dl, l.icons[i], g.c, r, fade(mask ? GLOW : INK, a), a);
+            if (is_combo(i)) {
+                char label[TOUCH_COMBO_NAME_MAX];
+                combo_label(i, control_profile(s), label, sizeof label);
+                float fs = r * .38f;
+                ImVec2 ts = font->CalcTextSizeA(fs, FLT_MAX, 0, label);
+                if (ts.x > r * 1.7f) fs *= r * 1.7f / ts.x, ts = font->CalcTextSizeA(fs, FLT_MAX, 0, label);
+                dl->AddText(font, fs, ImVec2(g.c.x-ts.x*.5f, g.c.y+r*.9f), fade(INK, a), label);
+            } else badge(dl, font, ImVec2(g.c.x+r*.7f, g.c.y+r*.7f), r*.3f, DEFS[i].letter, a);
+            return;
+        }
+    }
     if (i == C_DPAD_TOGGLE) {
         bool shown = config_live_touch_show(TB_DPAD) != 0;
         disc(dl, g.c, g.r, shown, a);
@@ -2659,6 +2932,7 @@ void draw_editor(ImDrawList *dl, ImFont *font, const State &s, float w, float h)
 }  // namespace
 
 extern "C" void touch_draw(float w, float h) {
+    icon_textures_frame();
     if ((!g_visible && !g_gear_only) || overlay_menu_open()) return;
     State s;
     {
@@ -2688,7 +2962,9 @@ extern "C" void touch_draw(float w, float h) {
     int ranged = ranged_layout_profile(control_profile(s));
     if (s.menu && in_mode(C_DPAD, s.menu, s.in_quest, ranged)) control(dl, font, s.layout, C_DPAD, w, h, s, a);
     for (int i = 0; i < C_COUNT; i++)
-        if (i != C_DPAD && in_mode(i, s.menu, s.in_quest, ranged)) control(dl, font, s.layout, i, w, h, s, a);
+        if (i != C_DPAD && !is_ammo(i) && in_mode(i, s.menu, s.in_quest, ranged)) control(dl, font, s.layout, i, w, h, s, a);
+    for (int i : {C_AMMO_UP, C_AMMO_DOWN})
+        if (in_mode(i, s.menu, s.in_quest, ranged)) control(dl, font, s.layout, i, w, h, s, a);
     // the HUD parts that answer a finger: the item bar's turn, the art performed, the lock-on
     Zones z = zones();
     Rect item = zone_rect(z, TZ_ITEM, w, h), target = zone_rect(z, TZ_TARGET, w, h), arts = zone_rect(z, TZ_ARTS, w, h);

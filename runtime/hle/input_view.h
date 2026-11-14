@@ -4,8 +4,8 @@
 #include <stdint.h>
 
 void input_view_apply(void);         // (any thread: the settings menu's Save) the profile changed: hook the game if it is on now and was not
-// Loads [Actions*] and, with Enable=1, hooks the translators. The hunt's pause menu handler is hooked either way (only
-// timed, for [Mouse] MouseCapture = Hunt: input_view_hunt_menu_open)
+// Loads [Actions*], installs the independent touch-run hooks, and with Enable=1 hooks the translators. The hunt's
+// pause menu handler is also timed, for [Mouse] MouseCapture = Hunt: input_view_hunt_menu_open.
 void input_view_init(void);
 bool input_view_dash_zr(void);       // the game's Control Type makes ZR the dash role (any thread; a frame late)
 int input_view_weapon(void);         // the weapon class the local hunter holds, 0..14 (-1: none seen)

@@ -5,8 +5,8 @@
 // set when it polls the pad, and runtime/hle/input_view.c hooks the engine's two button translators (f_5de4b0 for the
 // gameplay view mb1, f_5de4f8 for the menu view mb2): act_view() replaces the buttons of the word they are given by
 // those of the active actions of the context (a hunt, a town, the menus). Every button of the game is an action in
-// each of the three contexts. Nothing else of the game is touched, and with [Actions] Enable=0 nothing is hooked at
-// all. Enable and ManageMenus are on by default: with no bindings the game plays as without them, but for
+// each of the three contexts. With [Actions] Enable=0 rebinding passes through; the independent touch-run input
+// still works. Enable and ManageMenus are on by default: with no bindings the game plays as without them, but for
 // act_default_binding's.
 //
 // Pure C: no guest memory and no window; the host's keys, mouse and controller come in through ActHost. The ini
@@ -181,6 +181,7 @@ typedef struct {
     uint64_t pulse[ACT_VARS];  // pressed since the last sample (a press shorter than a game frame is still delivered)
     int ptr_x, ptr_y;          // pointer feed (M2), in the 1280x720 UI space
     bool ptr_down, ptr_valid;
+    bool touch_run;           // independent touch-stick run request, never a native R/weapon action
 } ActSnap;
 
 typedef struct {

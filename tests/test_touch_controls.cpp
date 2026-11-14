@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 #ifdef _WIN32
@@ -167,15 +168,17 @@ void config_combo_text(uint32_t buttons, char *out, size_t n) {
     if(n) snprintf(out,n,"%s",label.c_str());
 }
 }
-struct Input { uint64_t b{}, touch_b{}; int lx{}, ly{}, rx{}, ry{}; float dx{}, dy{}; };
+struct Input { uint64_t b{}, touch_b{}; int lx{}, ly{}, rx{}, ry{}; float dx{}, dy{}; bool run{}; };
 static Input update(uint64_t controller = 0, bool pad = false, bool typing = false) {
     Input v; v.b = controller;
     v.touch_b = touch_input(pad, typing, &v.b, &v.lx, &v.ly, &v.rx, &v.ry, &v.dx, &v.dy);
+    v.run = touch_running();
     return v;
 }
 static Input update_axes(uint64_t buttons,int lx,int ly,int rx,int ry) {
     Input v; v.b=buttons; v.lx=lx; v.ly=ly; v.rx=rx; v.ry=ry;
     v.touch_b=touch_input(true,false,&v.b,&v.lx,&v.ly,&v.rx,&v.ry,&v.dx,&v.dy);
+    v.run=touch_running();
     return v;
 }
 static void event(Uint32 type, SDL_FingerID id, float x, float y) {
@@ -314,8 +317,8 @@ static void auto_r() {
         const ImVec2 origin=floating?ImVec2(screen_w*.35f,screen_h*.75f):g.c;
         event(SDL_EVENT_FINGER_DOWN,1,origin.x,origin.y); assert(finger(g_s,1)->kind==F_STICK);
         auto check=[&](Input v,bool full) {
-            const uint64_t expected=flag&&full?B(BTN_R):0;
-            assert(v.b==expected && v.touch_b==expected && g_s.run==(expected!=0));
+            const bool expected=flag&&full;
+            assert(!v.b && !v.touch_b && v.run==expected && g_s.run==expected);
             assert(!v.rx && !v.ry && !v.dx && !v.dy);
         };
         auto move=[&](float x,float y,bool full) {
@@ -334,7 +337,7 @@ static void auto_r() {
         event(SDL_EVENT_FINGER_MOTION,2,origin.x+.97f*g.r,origin.y); check(update(),false);
         event(SDL_EVENT_FINGER_CANCELED,2,origin.x+g.r,origin.y); check(update(),false);
     }
-    puts("PASS: optional AutoR defaults off in the fixture; fixed/floating common sticks at four sizes send native R at 0.98 radius and release below 0.95 in town/quest with drawn/sheathed weapons; radial hysteresis is per touch and movement remains linear without camera output");
+    puts("PASS: optional AutoR defaults off in the fixture; fixed/floating common sticks at four sizes request running only at 0.98 radius and release below 0.95 in town/quest with drawn/sheathed weapons; native R remains absent, radial hysteresis is per touch and movement remains linear without camera output");
 }
 
 static void floating_stick() {
@@ -425,6 +428,8 @@ static void same_layout(const Layout &a, const Layout &b) {
         assert(fabsf(a.x[c]-b.x[c])<.0001f && fabsf(a.y[c]-b.y[c])<.0001f);
         assert(fabsf(a.scale[c]-b.scale[c])<.001f);
     }
+    for (int c : ICON_CONTROLS)
+        assert(a.icons[c].choice==b.icons[c].choice && !strcmp(a.icons[c].hash,b.icons[c].hash));
     for (int z=0;z<TZ_COUNT;++z) assert(fabsf(a.zx[z]-b.zx[z])<.11f && fabsf(a.zy[z]-b.zy[z])<.11f);
 }
 static std::string stored_layout_text(int p) {
@@ -437,6 +442,17 @@ static std::string read_text(const char *path) {
 }
 static void write_text(const char *path,const std::string &value) {
     std::ofstream f(path,std::ios::binary); assert(f); f<<value; assert(f.good());
+}
+static std::string legacy_template(const std::string &current,int version) {
+    assert(version==1 || version==2);
+    std::istringstream input(current); std::string line,result;
+    while(std::getline(input,line)) {
+        if(!line.empty() && line.back()=='\r') line.pop_back();
+        if(line.rfind("icon ",0)==0 && (version==1 || line.rfind("icon ammo_up ",0)==0 || line.rfind("icon ammo_down ",0)==0)) continue;
+        if(line.rfind("layout_version ",0)==0) line="layout_version "+std::to_string(version);
+        result+=line+'\n';
+    }
+    return result;
 }
 static bool save_legacy_layout(const Layout &l,int slot) {
     char path[40]; layout_path(slot,path,sizeof path); FILE *f=fopen(path,"w"); assert(f);
@@ -1356,6 +1372,245 @@ static void ammo_repeat() {
     puts("PASS: common-layout HUD ammo slides reverse one bounded pending step without generic pulse growth; motion stops blind repeat, lift stops queueing and reset releases touch-owned L/ammo");
 }
 
+static void arrow_gesture_ownership() {
+    for(const ImVec2 size:{ImVec2(640,360),ImVec2(1280,720),ImVec2(2520,1080)})
+    for(int weapon:{0,4,6,10}) for(bool ammo:{false,true}) for(int direction:{-1,1}) for(int contact=0;contact<3;++contact) {
+        if(ammo && !weapon) continue;
+        fresh((int)size.x,(int)size.y); weapon_override=weapon; ranged=weapon==10?WEAPON_BOW:weapon?WEAPON_BOWGUN:0;
+        local_hunter=0x08004000; drawn=1;
+        std::fill(std::begin(cfg.touch_show),std::end(cfg.touch_show),0);
+        cfg.touch_show[TB_ATTACKS]=cfg.touch_show[TB_AMMO]=1; cfg.touch_show[TB_ITEM_ARROWS]=!ammo; update();
+        const int ctl=direction>0?C_AMMO_UP:C_AMMO_DOWN;
+        g_s.layout.scale[ctl]=contact==1?.65f:contact==2?1.5f:1;
+        Geo arrow;
+        if(ammo) arrow=place(g_s.layout,ctl,(float)screen_w,(float)screen_h);
+        else {
+            hud(TZ_ITEM,640,400);
+            arrow=item_arrow(zone_rect(zones(),TZ_ITEM,(float)screen_w,(float)screen_h),direction,(float)screen_h);
+            // The item HUD arrow must also win over an editable ammo arrow beneath it.
+            g_s.layout.x[ctl]=(screen_w-arrow.c.x)/screen_h; g_s.layout.y[ctl]=1-arrow.c.y/screen_h;
+        }
+        ImVec2 point=arrow.c;
+        if(contact==1) point.y+=arrow.r*1.1f; // Arrow hit slop over an ordinary button's visible face.
+        const float light_r=DEFS[C_LIGHT].r*screen_h;
+        g_s.layout.x[C_LIGHT]=(screen_w-point.x-(contact==2?light_r*1.1f:0))/screen_h;
+        g_s.layout.y[C_LIGHT]=1-point.y/screen_h;
+        auto owner=[&]() {
+            const Finger *f=finger(g_s,1);
+            const bool ok=f && (ammo?(f->kind==F_BUTTON && f->ctl==ctl && f->part==2):(f->kind==F_ITEM && f->part==1));
+            if(!ok) fprintf(stderr,"ARROW OWNER FAILURE: %dx%d weapon=%d ammo=%d dir=%d contact=%d kind=%d ctl=%d part=%d\n",screen_w,screen_h,weapon,ammo,direction,contact,f?f->kind:-1,f?f->ctl:-1,f?f->part:-1);
+            assert(ok);
+        };
+        auto selection_only=[&]() {
+            const uint64_t physical=B(BTN_R)|B(BTN_ZR); const Input v=update(physical,true);
+            const uint64_t allowed=ammo?(B(BTN_L)|B(BTN_X)|B(BTN_B)):B(BTN_L);
+            if(v.dx || v.dy || v.rx || v.ry || (v.touch_b&~allowed) || bow_drag.begins)
+                fprintf(stderr,"ARROW INPUT FAILURE: %dx%d weapon=%d ammo=%d dir=%d contact=%d touch=%llu camera=%f,%f bow=%d\n",screen_w,screen_h,weapon,ammo,direction,contact,(unsigned long long)v.touch_b,v.dx,v.dy,bow_drag.begins);
+            assert(!(v.touch_b&~allowed) && v.b==(v.touch_b|physical) && !bow_drag.begins && !bow_drag.adds);
+            no_stick_camera(v); return v;
+        };
+        event(SDL_EVENT_FINGER_DOWN,1,point.x,point.y); owner();
+        assert(selection_only().touch_b==B(BTN_L));
+        if(ammo) assert(pulses(B(direction>0?BTN_X:BTN_B))==1 && item_steps.empty());
+        else assert(item_steps==std::vector<int>{direction} && !pulses(B(BTN_X)) && !pulses(B(BTN_B)));
+        event(SDL_EVENT_FINGER_MOTION,1,point.x+screen_h*.2f,point.y-screen_h*.15f); owner(); selection_only();
+        event(SDL_EVENT_FINGER_MOTION,1,point.x-screen_h*.2f,point.y+screen_h*.15f); owner(); selection_only();
+        // A separate empty-space finger still owns the ordinary camera while the arrow finger moves.
+        const ImVec2 camera(screen_w*.5f,screen_h*.25f);
+        event(SDL_EVENT_FINGER_DOWN,2,camera.x,camera.y); assert(finger(g_s,2)->kind==F_CAMERA);
+        event(SDL_EVENT_FINGER_MOTION,2,camera.x+screen_h*.07f,camera.y-screen_h*.04f);
+        event(SDL_EVENT_FINGER_MOTION,1,point.x+screen_h*.3f,point.y-screen_h*.2f);
+        Input v=update(); camera_delta(v,screen_h*.07f,-screen_h*.04f); assert(!v.rx && !v.ry && !bow_drag.begins);
+        event(SDL_EVENT_FINGER_CANCELED,2,camera.x+10000,camera.y-10000); selection_only();
+        event(SDL_EVENT_FINGER_UP,1,point.x+10000,point.y-10000); selection_only(); assert(!finger(g_s,1));
+        for(const Uint32 release:{SDL_EVENT_FINGER_UP,SDL_EVENT_FINGER_CANCELED}) {
+            touch_reset(); update(); item_steps.clear();
+            if(!ammo) hud(TZ_ITEM,640,400);
+            event(SDL_EVENT_FINGER_DOWN,1,point.x,point.y); owner(); selection_only();
+            const size_t accepted=item_steps.size();
+            event(release,1,point.x-10000,point.y+10000); selection_only(); assert(!finger(g_s,1));
+            if(release==SDL_EVENT_FINGER_CANCELED) {
+                assert(item_steps.size()==accepted && !g_s.ammo_pulse.until && !touch_item_pending);
+                event(SDL_EVENT_FINGER_UP,1,point.x+10000,point.y-10000); selection_only();
+                assert(item_steps.size()==accepted && !g_s.ammo_pulse.until && !touch_item_pending);
+            }
+        }
+        for(const Pulse &p:g_s.pulse) assert(!p.until);
+        if(ammo) assert(item_steps.empty());
+    }
+    puts("PASS: both item and ammo arrows own hits above ordinary button faces/slop, item arrows also win over ammo, and 1.2 arrow slop works at three sizes for melee/HBG/LBG/Bow; drag, distant UP-only and CANCEL never move camera or Bow charge, a separate finger still steers, native selection and physical R/ZR stay independent");
+}
+
+static void ammo_visibility_and_editor() {
+    for(bool quest:{false,true}) for(int weapon:{0,4,6,10,UNKNOWN_WEAPON}) for(bool shown:{false,true}) for(bool menu:{false,true}) {
+        fresh(); in_quest=quest; weapon_override=weapon; ranged=weapon==10?WEAPON_BOW:(weapon==4 || weapon==6)?WEAPON_BOWGUN:0;
+        local_hunter=0x08004000; drawn=1; std::fill(std::begin(cfg.touch_show),std::end(cfg.touch_show),0); cfg.touch_show[TB_AMMO]=shown;
+        game_menu_state(menu); const bool eligible=quest && ranged && shown;
+        for(int c:{C_AMMO_UP,C_AMMO_DOWN}) {
+            assert(in_mode(c,menu,quest)==(eligible && !menu) && in_editor(c,quest,profile)==eligible);
+            const Geo g=place(g_s.layout,c,(float)screen_w,(float)screen_h);
+            assert((drawn_vertices(g.c,g.r*.7f)>0)==(eligible && !menu));
+            at(SDL_EVENT_FINGER_DOWN,c); const Finger *f=finger(g_s,1);
+            assert((f && f->kind==F_BUTTON && f->ctl==c)==(eligible && !menu));
+            at(SDL_EVENT_FINGER_CANCELED,c); no_stick_camera(update());
+        }
+    }
+    for(const ImVec2 size:{ImVec2(640,360),ImVec2(1280,720),ImVec2(2520,1080)}) for(int c:{C_AMMO_UP,C_AMMO_DOWN}) {
+        fresh((int)size.x,(int)size.y); ranged=WEAPON_BOW; weapon_override=10; local_hunter=0x08004000; cfg.touch_show[TB_AMMO]=1;
+        enable_universal_combos(); update(); assert(save_layout_file(g_s.layout,COMMON_PATH)); const Layout original=g_s.layout;
+        const Geo arrow=place(g_s.layout,c,(float)screen_w,(float)screen_h);
+        for(int combo=C_COMBO;combo<C_COMBO+TOUCH_COMBOS;++combo) {
+            const Geo g=place(g_s.layout,combo,(float)screen_w,(float)screen_h);
+            assert(hypotf(arrow.c.x-g.c.x,arrow.c.y-g.c.y)>1.22f*(arrow.r+g.r));
+        }
+        for(bool save:{false,true}) {
+            touch_edit_begin(); update(); const Geo g=place(g_s.layout,c,(float)screen_w,(float)screen_h);
+            at(SDL_EVENT_FINGER_DOWN,c); assert(g_s.sel==c && finger(g_s,1)->kind==F_EDIT);
+            event(SDL_EVENT_FINGER_MOTION,1,g.c.x-screen_h*.10f,g.c.y-screen_h*.08f);
+            event(SDL_EVENT_FINGER_UP,1,g.c.x-screen_h*.10f,g.c.y-screen_h*.08f); editor_click(E_BIGGER);
+            const Layout draft=g_s.layout;
+            assert(fabsf(draft.x[c]-original.x[c]-.10f)<.0001f && fabsf(draft.y[c]-original.y[c]-.08f)<.0001f && draft.scale[c]>1.09f);
+            no_stick_camera(update()); assert(!bow_drag.begins && item_steps.empty());
+            editor_click(save?E_SAVE:E_CANCEL); update(); same_layout(g_s.layout,save?draft:original);
+            Layout disk; assert(load_layout_file(&disk,COMMON_PATH)); same_layout(disk,save?draft:original);
+            touch_reset(); g_s={}; update(); same_layout(g_s.layout,save?draft:original);
+        }
+    }
+    puts("PASS: independent ammo arrows draw/hit/edit only for quest HBG/LBG/Bow with ShowAmmo; town, melee, unknown weapon and menus suppress runtime arrows; both defaults clear all six combos, and drag/scale Cancel/Save/restart preserve their independent saved geometry at three sizes");
+}
+
+static void arrow_gesture_lifecycle() {
+    for(bool ammo:{false,true}) for(int mode=0;mode<11;++mode) {
+        if(!ammo && mode==6) continue;
+        fresh(); ranged=WEAPON_BOW; weapon_override=10; local_hunter=0x08004000; drawn=1;
+        cfg.touch_show[TB_AMMO]=cfg.touch_show[TB_ITEM_ARROWS]=1; update();
+        Geo arrow;
+        if(ammo) arrow=place(g_s.layout,C_AMMO_UP,(float)screen_w,(float)screen_h);
+        else { hud(TZ_ITEM,640,400); arrow=item_arrow(zone_rect(zones(),TZ_ITEM,(float)screen_w,(float)screen_h),1,(float)screen_h); }
+        event(SDL_EVENT_FINGER_DOWN,1,arrow.c.x,arrow.c.y); assert(item_gesture(*finger(g_s,1)));
+        event(SDL_EVENT_FINGER_MOTION,1,arrow.c.x+70,arrow.c.y-70); no_stick_camera(update());
+        const size_t accepted=item_steps.size();
+        switch(mode) {
+            case 0: game_menu_state(true); break;
+            case 1: settings_open=true; break;
+            case 2: cfg.touch_controls=TOUCH_OFF; break;
+            case 3: cfg.touch_show[ammo?TB_AMMO:TB_ITEM_ARROWS]=0; break;
+            case 4: touch_edit_begin(); break;
+            case 5: in_quest=false; break;
+            case 6: ranged=0; weapon_override=0; break;
+            case 7: touch_reset(); break;
+            case 8: assert(touch_template_save(19,"Arrow reset") && touch_template_use(19)); break;
+            case 9: break;
+            case 10: settings_open=true; event(SDL_EVENT_FINGER_UP,1,arrow.c.x+10000,arrow.c.y-10000); break;
+        }
+        auto stopped=[&]() {
+            const uint64_t physical=B(BTN_L)|B(BTN_X)|B(BTN_B)|B(BTN_R);
+            const Input v=update(physical,true,mode==9);
+            if(finger(g_s,1) || v.touch_b || touch_item_pending || g_s.ammo_pulse.until)
+                fprintf(stderr,"ARROW LIFECYCLE FAILURE: ammo=%d mode=%d finger=%d touch=%llu item=%d ammo_until=%llu\n",ammo,mode,finger(g_s,1)!=nullptr,(unsigned long long)v.touch_b,touch_item_pending,(unsigned long long)g_s.ammo_pulse.until);
+            assert(!finger(g_s,1) && !v.touch_b && v.b==physical && !touch_item_pending && !g_s.ammo_pulse.until && !g_s.ammo_hold && !g_s.ammo_ready);
+            no_stick_camera(v); assert(!bow_drag.begins && item_steps.size()==accepted);
+        };
+        stopped(); event(SDL_EVENT_FINGER_UP,1,arrow.c.x-10000,arrow.c.y+10000); stopped();
+        settings_open=false; cfg.touch_controls=TOUCH_ON; cfg.touch_show[TB_AMMO]=cfg.touch_show[TB_ITEM_ARROWS]=1;
+        if(g_s.edit) { editor_click(E_CANCEL); update(); } if(g_s.menu) game_menu_state(false);
+        in_quest=true; ranged=WEAPON_BOW; weapon_override=10; stopped();
+    }
+    fresh(); cfg.touch_show[TB_ITEM_ARROWS]=1; const ImVec2 item=hud(TZ_ITEM,640,400);
+    event(SDL_EVENT_FINGER_DOWN,1,item.x,item.y); event(SDL_EVENT_FINGER_MOTION,1,item.x+100,item.y);
+    cfg.touch_show[TB_ITEM_ARROWS]=0; const Input item_only=update();
+    assert(finger(g_s,1) && finger(g_s,1)->kind==F_ITEM && item_only.touch_b==B(BTN_L) && touch_item_pending==1);
+    no_stick_camera(item_only); event(SDL_EVENT_FINGER_CANCELED,1,item.x+100,item.y); assert(!update().touch_b && !touch_item_pending);
+    puts("PASS: item/ammo arrow ownership and pending selection clear on menus, overlays including event-only UP, Off, hidden arrows, editor, scene changes, reset, templates and typing; ammo also clears on weapon change, and old UP/return never revives input while physical L/X/B/R survive");
+}
+
+static void arrow_release_pending_and_overlap() {
+    int failures=0;
+    auto check=[&](bool ok,const char *label,int weapon,int direction,int mode) {
+        if(!ok) { ++failures; fprintf(stderr,"ARROW RELEASE FAILURE: %s weapon=%d direction=%d mode=%d\n",label,weapon,direction,mode); }
+    };
+    for(const ImVec2 size:{ImVec2(640,360),ImVec2(1280,720),ImVec2(2520,1080)}) for(float scale:{.7f,1.4f}) {
+        fresh((int)size.x,(int)size.y); ranged=WEAPON_BOW; weapon_override=10; local_hunter=0x08004000;
+        cfg.touch_show[TB_AMMO]=1; update();
+        g_s.layout.x[C_AMMO_DOWN]=g_s.layout.x[C_AMMO_UP]; g_s.layout.y[C_AMMO_DOWN]=g_s.layout.y[C_AMMO_UP];
+        g_s.layout.scale[C_AMMO_UP]=g_s.layout.scale[C_AMMO_DOWN]=scale;
+        at(SDL_EVENT_FINGER_DOWN,C_AMMO_DOWN); const Finger *f=finger(g_s,1);
+        check(f && f->kind==F_BUTTON && f->ctl==C_AMMO_DOWN && pulses(B(BTN_B))==1 && !pulses(B(BTN_X)),
+              "last-drawn overlapping DOWN must win",10,-1,(int)(scale*screen_h));
+        no_stick_camera(update()); at(SDL_EVENT_FINGER_CANCELED,C_AMMO_DOWN); assert(!update().touch_b);
+    }
+    for(int weapon:{4,6,10}) for(int direction:{-1,1}) for(int change=0;change<3;++change) {
+        fresh(); ranged=weapon==10?WEAPON_BOW:WEAPON_BOWGUN; weapon_override=weapon; local_hunter=0x08004000;
+        cfg.touch_show[TB_AMMO]=1; update(); const int ctl=direction>0?C_AMMO_UP:C_AMMO_DOWN;
+        at(SDL_EVENT_FINGER_DOWN,ctl); at(SDL_EVENT_FINGER_UP,ctl);
+        assert(!finger(g_s,1) && g_s.ammo_pulse.from>SDL_GetTicksNS() && update().touch_b==B(BTN_L));
+        if(change==0) cfg.touch_show[TB_AMMO]=0;
+        else { ranged=0; weapon_override=change==1?0:UNKNOWN_WEAPON; }
+        const uint64_t physical=B(BTN_L)|B(BTN_X)|B(BTN_B)|B(BTN_R);
+        Input v=update(physical,true);
+        check(!v.touch_b && v.b==physical && !g_s.ammo_pulse.until && !g_s.ammo_hold && !g_s.ammo_ready,
+              "released ammo tail must cancel",weapon,direction,change); no_stick_camera(v);
+        cfg.touch_show[TB_AMMO]=1; ranged=weapon==10?WEAPON_BOW:WEAPON_BOWGUN; weapon_override=weapon;
+        v=update(physical,true); check(!v.touch_b && v.b==physical,"restoring arrows cannot revive tail",weapon,direction,change);
+        no_stick_camera(v); assert(item_steps.empty() && !bow_drag.begins);
+    }
+    // ShowAmmo governs the added buttons; native vertical item-bar selection remains available.
+    for(int weapon:{4,6,10}) for(int direction:{-1,1}) for(bool initially_hidden:{false,true}) {
+        fresh(); ranged=weapon==10?WEAPON_BOW:WEAPON_BOWGUN; weapon_override=weapon; local_hunter=0x08004000;
+        cfg.touch_show[TB_AMMO]=!initially_hidden; update(); const ImVec2 item=hud(TZ_ITEM,640,620);
+        event(SDL_EVENT_FINGER_DOWN,1,item.x,item.y); event(SDL_EVENT_FINGER_UP,1,item.x,item.y-direction*120);
+        assert(!finger(g_s,1) && pulses(B(direction>0?BTN_X:BTN_B))==1);
+        const uint64_t until=g_s.ammo_pulse.until,hold=g_s.ammo_hold; cfg.touch_show[TB_AMMO]=0;
+        Input v=update(B(BTN_R),true);
+        check(v.touch_b==B(BTN_L) && v.b==(B(BTN_L)|B(BTN_R)) && g_s.ammo_pulse.until==until && g_s.ammo_hold==hold,
+              "hidden ammo buttons must preserve HUD pending selection",weapon,direction,initially_hidden); no_stick_camera(v);
+        g_s.ammo_pulse.from=0; g_s.ammo_pulse.until=SDL_GetTicksNS()+80*MS;
+        v=update(); check(v.touch_b==(B(BTN_L)|B(direction>0?BTN_X:BTN_B)),"HUD pending selection must still fire",weapon,direction,initially_hidden);
+        no_stick_camera(v); assert(item_steps.empty() && !bow_drag.begins);
+    }
+    for(int direction:{-1,1}) for(bool arrow_source:{false,true}) {
+        fresh(); cfg.touch_show[TB_ITEM_ARROWS]=1; const ImVec2 item=hud(TZ_ITEM,640,400);
+        const Geo arrow=item_arrow(zone_rect(zones(),TZ_ITEM,(float)screen_w,(float)screen_h),direction,(float)screen_h);
+        const ImVec2 start=arrow_source?arrow.c:item;
+        event(SDL_EVENT_FINGER_DOWN,1,start.x,start.y);
+        event(SDL_EVENT_FINGER_UP,1,start.x+(arrow_source?0:direction*120),start.y);
+        assert(!finger(g_s,1) && touch_item_pending==direction);
+        cfg.touch_show[TB_ITEM_ARROWS]=0; Input v=update(B(BTN_R),true);
+        check(touch_item_pending==(arrow_source?0:direction) && !v.touch_b && v.b==B(BTN_R),
+              "released item request must respect arrow/HUD origin",0,direction,arrow_source); no_stick_camera(v);
+        event(SDL_EVENT_FINGER_DOWN,2,item.x,item.y); event(SDL_EVENT_FINGER_UP,2,item.x+120,item.y);
+        v=update(); check(touch_item_pending==1 && !v.touch_b,"new horizontal HUD request must survive hidden arrows",0,direction,arrow_source);
+        no_stick_camera(v);
+    }
+    // A newer native HUD gesture replaces an earlier arrow's pending ammo source.
+    fresh(); ranged=WEAPON_BOW; weapon_override=10; local_hunter=0x08004000; cfg.touch_show[TB_AMMO]=1; update();
+    at(SDL_EVENT_FINGER_DOWN,C_AMMO_UP); at(SDL_EVENT_FINGER_UP,C_AMMO_UP);
+    const ImVec2 item=hud(TZ_ITEM,640,620);
+    event(SDL_EVENT_FINGER_DOWN,2,item.x,item.y); event(SDL_EVENT_FINGER_UP,2,item.x,item.y+120);
+    cfg.touch_show[TB_AMMO]=0; const Input v=update();
+    check(v.touch_b==B(BTN_L) && pulses(B(BTN_B))==1 && !pulses(B(BTN_X)),"new HUD ammo source replaces prior arrow source",10,-1,0);
+    no_stick_camera(v);
+    for(bool ammo:{false,true}) {
+        fresh(); ranged=WEAPON_BOW; weapon_override=10; local_hunter=0x08004000;
+        cfg.touch_show[TB_AMMO]=cfg.touch_show[TB_ITEM_ARROWS]=1; update(); const ImVec2 item=hud(TZ_ITEM,640,620);
+        const Geo arrow=ammo?place(g_s.layout,C_AMMO_UP,(float)screen_w,(float)screen_h):
+            item_arrow(zone_rect(zones(),TZ_ITEM,(float)screen_w,(float)screen_h),1,(float)screen_h);
+        event(SDL_EVENT_FINGER_DOWN,1,arrow.c.x,arrow.c.y);
+        event(SDL_EVENT_FINGER_DOWN,2,item.x,item.y);
+        event(SDL_EVENT_FINGER_MOTION,2,item.x-(ammo?0:120),item.y+(ammo?120:0));
+        assert(finger(g_s,1) && finger(g_s,2) && finger(g_s,2)->kind==F_ITEM);
+        cfg.touch_show[ammo?TB_AMMO:TB_ITEM_ARROWS]=0; const Input mixed=update();
+        const Finger *hud_finger=finger(g_s,2);
+        check(!finger(g_s,1) && hud_finger && hud_finger->kind==F_ITEM && mixed.touch_b==B(BTN_L) &&
+              (ammo?(pulses(B(BTN_B))==1 && !pulses(B(BTN_X))):touch_item_pending==-1),
+              "hiding one arrow must preserve another finger's HUD selection",10,-1,ammo);
+        no_stick_camera(mixed); event(SDL_EVENT_FINGER_CANCELED,2,item.x-120,item.y+120);
+        assert(!update().touch_b && !touch_item_pending && !g_s.ammo_pulse.until);
+    }
+    assert(!failures);
+    puts("PASS: overlapping ammo buttons hit the last-drawn DOWN; released arrow-owned ammo/item requests cancel when hidden or weapon-invalid and never revive, while hidden-arrow settings preserve native vertical/horizontal HUD selection and newer HUD ownership");
+}
+
 static void item_gesture_lifecycle() {
     for(int mode=0;mode<7;++mode) for(int ammo=0;ammo<2;++ammo) {
         fresh(); ranged=WEAPON_BOWGUN; drawn=1; update();
@@ -1579,6 +1834,43 @@ static void common_r_aim_identity() {
     }
     puts("PASS: common R is localized Aim with the original golden scope geometry/colors; guard persistence key, position/size and touch/controller BTN_R behavior remain intact across town/quest weapon contexts");
 }
+static void ammo_default_migration() {
+    fresh(); enable_universal_combos(); assert(save_layout_file(g_s.layout,COMMON_PATH));
+    const std::string original=read_text(COMMON_PATH),old_legacy=stored_layout_text(COMMON_BASE);
+    char legacy_path[40]; layout_path(COMMON_BASE,legacy_path,sizeof legacy_path);
+    for(int version:{0,1,2,3}) for(int up=0;up<3;++up) for(int down=0;down<3;++down) {
+        Layout source=defaults(COMMON_BASE); source.x[C_DPAD_TOGGLE]=.717f;
+        for(int c:{C_AMMO_UP,C_AMMO_DOWN}) {
+            const int custom=c==C_AMMO_UP?up:down;
+            source.x[c]=.56f+(custom==1?.017f:0); source.y[c]=c==C_AMMO_UP?.30f:.13f;
+            source.scale[c]=custom==2?1.25f:1;
+        }
+        Layout expected=source;
+        for(int c:{C_AMMO_UP,C_AMMO_DOWN}) if(version<3 && (c==C_AMMO_UP?up:down)==0) {
+            expected.x[c]=.94f; expected.y[c]=c==C_AMMO_UP?.44f:.28f;
+        }
+        std::string stored;
+        if(!version) {
+            assert(save_legacy_layout(source,COMMON_BASE)); stored=stored_layout_text(COMMON_BASE); assert(SDL_RemovePath(COMMON_PATH));
+        } else {
+            g_s.layout=source; assert(touch_template_save(9,"Ammo migration"));
+            stored=read_text("touch_template_10.txt"); if(version<3) stored=legacy_template(stored,version);
+            write_text(COMMON_PATH,stored); write_text("touch_template_10.txt",stored);
+        }
+        Layout loaded; load_common_layout(&loaded); same_layout(loaded,expected);
+        touch_reset(); g_s={}; update(); same_layout(g_s.layout,expected);
+        if(!version) {
+            assert(!SDL_GetPathInfo(COMMON_PATH,nullptr) && stored_layout_text(COMMON_BASE)==stored);
+            assert(save_layout_file(expected,COMMON_PATH));
+        } else {
+            assert(read_text(COMMON_PATH)==stored);
+            assert(touch_template_use(9)); same_layout(g_s.layout,expected);
+            assert(read_text("touch_template_10.txt")==stored);
+        }
+    }
+    write_text(COMMON_PATH,original); write_text(legacy_path,old_legacy); touch_reset(); g_s={}; update();
+    puts("PASS: v1/v2 and missing-common legacy import migrate each exact old ammo default independently; any custom position or scale survives, v3 old-looking positions stay unchanged, and load/startup/template application never rewrites the source snapshot");
+}
 static void common_controls_and_names() {
     const char *const names[]={"蓄力", "回避 组合", "锁定目标", "防御", "道具", "狩技三"};
     for(const ImVec2 size:{ImVec2(640,360),ImVec2(1280,720),ImVec2(2520,1080),ImVec2(3840,1080)}) {
@@ -1589,8 +1881,12 @@ static void common_controls_and_names() {
             in_quest=quest; weapon_override=weapon; ranged=weapon==6?WEAPON_BOWGUN:weapon==10?WEAPON_BOW:0;
             game_menu_state(menu);
             assert(profile==TOUCH_UNIVERSAL_PROFILE && g_style==STYLE_SEPARATE && !g_ranged);
-            for(int c:{C_LAYOUT,C_RSTICK,C_RFIRE,C_RSECOND,C_RAIM,C_RSPECIAL,C_RDODGE,C_RSHEATHE,C_AMMO_UP,C_AMMO_DOWN}) {
+            for(int c:{C_LAYOUT,C_RSTICK,C_RFIRE,C_RSECOND,C_RAIM,C_RSPECIAL,C_RDODGE,C_RSHEATHE}) {
                 assert(!in_mode(c,menu,quest) && !in_editor(c,quest,profile));
+            }
+            for(int c:{C_AMMO_UP,C_AMMO_DOWN}) {
+                assert(in_mode(c,menu,quest)==(quest && ranged!=0 && !menu));
+                assert(in_editor(c,quest,profile)==(quest && ranged!=0));
             }
             const auto geometry=touch_geometry(); const float old=g_s.layout.x[C_LAYOUT];
             g_s.layout.x[C_LAYOUT]=.57f; same_geometry(geometry,touch_geometry()); g_s.layout.x[C_LAYOUT]=old;
@@ -1666,20 +1962,42 @@ static void common_editor_and_failure() {
 }
 static void template_roundtrip_and_failure() {
     fresh(); enable_universal_combos(); cfg.volume=73;
+    assert(TOUCH_TEMPLATE_COUNT==40);
     for(int p=0;p<TOUCH_UNIVERSAL_PROFILE;++p) strcpy(cfg.touch_weapon_combo[p][0],"Y");
     assert(save_layout_file(g_s.layout,COMMON_PATH)); const std::string active=read_text(COMMON_PATH);
     std::vector<Layout> layouts; std::vector<Config> configurations; std::vector<std::string> stored;
     for(int slot=0;slot<TOUCH_TEMPLATE_COUNT;++slot) {
-        char path[40],name[64],actual[64]; template_path(slot,path,sizeof path); remove(path);
+        char path[40],expected[40]; template_path(slot,path,sizeof path);
+        snprintf(expected,sizeof expected,"touch_template_%02d.txt",slot+1);
+        assert(!strcmp(path,expected)); remove(path);
+    }
+    for(int slot=0;slot<TOUCH_TEMPLATE_COUNT;++slot) {
+        if(slot==20) {
+            for(int old=0;old<20;++old) { char path[40]; template_path(old,path,sizeof path); assert(read_text(path)==stored[old]); }
+            for(int added=20;added<40;++added) {
+                char name[64]="stale"; assert(!touch_template_info(added,name,sizeof name) && !name[0]);
+            }
+        }
+        char path[40],name[64],actual[64]; template_path(slot,path,sizeof path);
         assert(!touch_template_info(slot,actual,sizeof actual) && !actual[0]);
         g_s.layout=defaults(COMMON_BASE); g_s.layout.x[C_DPAD_TOGGLE]=.31f+slot*.01f;
         g_s.layout.scale[C_STICK]=.7f+slot*.02f; g_s.layout.zx[TZ_ITEM]=slot*3; g_s.layout.zy[TZ_ARTS]=-slot*2;
+        for(int c:{C_AMMO_UP,C_AMMO_DOWN}) {
+            g_s.layout.x[c]=.90f+slot*.002f+(c==C_AMMO_DOWN?.10f:0);
+            g_s.layout.y[c]=.20f+slot*.003f+(c==C_AMMO_DOWN?.20f:0);
+            g_s.layout.scale[c]=.60f+slot*.01f+(c==C_AMMO_DOWN?.20f:0);
+            g_s.layout.icons[c].choice=(slot+(c==C_AMMO_DOWN?3:0))%touch_icon_builtin_count()+1;
+        }
         for(int i=0;i<TOUCH_COMBOS;++i) {
             strcpy(cfg.touch_weapon_combo[profile][i],UNIVERSAL_COMBOS[(slot+i)%TOUCH_COMBOS]);
             cfg.touch_weapon_combo_pad[profile][i]=(slot+i)%PADB_COUNT;
             snprintf(cfg.touch_combo_name[i],TOUCH_COMBO_NAME_MAX,"模板%d 组合%d",slot+1,i+1);
         }
         if(slot==2) { cfg.touch_weapon_combo[profile][0][0]=0; cfg.touch_combo_name[0][0]=0; }
+        if(slot==39) {
+            const char *const names[]={"  蓄力", "回避  ", "  组合 中文  ", "", "   ", "普通 UTF-8 名称"};
+            for(int i=0;i<TOUCH_COMBOS;++i) strcpy(cfg.touch_combo_name[i],names[i]);
+        }
         snprintf(name,sizeof name,"自定义 %d",slot+1);
         layouts.push_back(g_s.layout); configurations.push_back(cfg);
         assert(touch_template_save(slot,name) && touch_template_info(slot,actual,sizeof actual) && !strcmp(name,actual));
@@ -1694,6 +2012,11 @@ static void template_roundtrip_and_failure() {
         touch_reset(); g_s={}; update(); same_layout(g_s.layout,layouts[slot]);
     }
     for(int slot=0;slot<TOUCH_TEMPLATE_COUNT;++slot) { char path[40]; template_path(slot,path,sizeof path); assert(read_text(path)==stored[slot]); }
+    // The last slot is an explicit snapshot; active edits cannot silently overwrite it or old slots.
+    g_s.layout.x[C_DPAD_TOGGLE]+=.01f;
+    assert(read_text("touch_template_40.txt")==stored[39]);
+    assert(touch_template_use(39)); same_layout(g_s.layout,layouts[39]);
+    assert(read_text("touch_template_01.txt")==stored[0] && read_text("touch_template_20.txt")==stored[19]);
     const int invalid_slots[]={-1,TOUCH_TEMPLATE_COUNT,999};
     char out[64]; for(int slot:invalid_slots) assert(!touch_template_info(slot,out,sizeof out) && !touch_template_save(slot,"bad") && !touch_template_use(slot));
     for(const char *name:{"","   ","bad\nname","bad\tname"}) assert(!touch_template_save(0,name));
@@ -1724,7 +2047,7 @@ static void template_roundtrip_and_failure() {
     at(SDL_EVENT_FINGER_DOWN,C_HEAVY,1); at(SDL_EVENT_FINGER_MOTION,C_HEAVY,1,2,-1);
     at(SDL_EVENT_FINGER_DOWN,C_STICK,2); at(SDL_EVENT_FINGER_MOTION,C_STICK,2,2,0); pulse(g_s,B(BTN_Y),1000*MS);
     assert(touch_template_use(0)); assert(!finger(g_s,1) && !finger(g_s,2)); neutral_sticks(update()); assert(!update().b);
-    puts("PASS: all 20 custom templates independently round-trip geometry/HUD plus six combo masks/pads/UTF-8 names; draft snapshots do not auto-save common, editor application is refused, unrelated config and templates survive, and failed file/config transactions preserve the active state");
+    puts("PASS: all 40 custom templates independently round-trip geometry/HUD plus six combo masks/pads/UTF-8 names, including exact leading/trailing spaces, empty and all-space names; original slots 1-20 keep their paths, slots 21-40 start empty, slot40 stays independent of slots1/20 and active edits, and slot41 is rejected; explicit draft snapshots and failed transactions preserve unrelated config/templates");
 }
 static void template_corrupt_input() {
     fresh(); enable_universal_combos(); assert(save_layout_file(g_s.layout,COMMON_PATH)); assert(touch_template_save(0,"有效模板"));
@@ -1733,11 +2056,12 @@ static void template_corrupt_input() {
         const size_t begin=text.find(key); assert(begin!=std::string::npos); const size_t end=text.find('\n',begin); assert(end!=std::string::npos);
         return text.replace(begin,end-begin+1,value);
     };
-    const std::vector<std::string> bad={"",good.substr(0,good.size()/2),line(good,"layout_version ","layout_version 2\n"),
+    const std::vector<std::string> bad={"",good.substr(0,good.size()/2),line(good,"layout_version ","layout_version 999\n"),
         line(good,"template_name ","template_name \n"),line(good,"attack ",""),line(good,"hud_items ","hud_items nan 0 1\n"),
         line(good,"combo_mask 1 ",""),line(good,"combo_mask 1 ","combo_mask 1 70000\n"),line(good,"combo_mask 1 ","combo_mask 1 65535\n"),
         line(good,"combo_pad 1 ","combo_pad 1 -1\n"),line(good,"combo_pad 1 ","combo_pad 1 999\n"),
-        line(good,"combo_name 1 ",""),line(good,"combo_name 1 ","combo_name 1 bad\tname\n")};
+        line(good,"combo_name 1 ",""),line(good,"combo_name 1 ","combo_name 1 bad\tname\n"),
+        line(good,"icon ammo_up ",""),line(good,"icon ammo_down ","")};
     for(const auto &value:bad) {
         write_text("touch_template_01.txt",value); char name[64]="stale";
         assert(!touch_template_info(0,name,sizeof name) && !name[0] && !touch_template_use(0));
@@ -1745,6 +2069,156 @@ static void template_corrupt_input() {
     }
     write_text("touch_template_01.txt",good); assert(touch_template_use(0));
     puts("PASS: empty, truncated, missing-field and invalid version/name/geometry/mask/pad templates fail closed without changing active layout/config or rewriting the bad input");
+}
+struct TestIcon { std::string bytes, hash, path; };
+static TestIcon stored_icon(std::string bytes) {
+    Sha256 sha; char hash[65]; sha256_init(&sha); sha256_update(&sha,bytes.data(),bytes.size()); sha256_hex(&sha,hash);
+    assert(SDL_CreateDirectory("touch_icons"));
+    TestIcon result{bytes,hash,std::string("touch_icons/")+hash+".rgba"};
+    write_text(result.path.c_str(),bytes); return result;
+}
+static TestIcon test_icon(unsigned char seed,int width=8,int height=8) {
+    std::string bytes("TICO",4);
+    for(int dimension:{width,height}) { bytes+=(char)(dimension&255); bytes+=(char)(dimension>>8); }
+    for(int y=0;y<height;++y) for(int x=0;x<width;++x) {
+        bytes+=(char)((x+y)%2?seed:240); bytes+=(char)(255-seed); bytes+=(char)(seed/2); bytes+=(char)255;
+    }
+    return stored_icon(bytes);
+}
+static void expect_icon(int button,int expected,const char *hash="") {
+    int choice=999; char actual[65]="stale";
+    assert(touch_icon_get(button,&choice,actual) && choice==expected && !strcmp(actual,hash));
+}
+static void set_icon(int button,int choice,const char *hash="") {
+    const uint64_t generation=touch_layout_generation();
+    assert(touch_icon_set(button,choice,hash,generation));
+    assert(touch_layout_generation()>generation); expect_icon(button,choice,choice==-1?hash:"");
+}
+static void icon_template_isolation() {
+    fresh(); enable_universal_combos(); cfg.volume=71; assert(save_layout_file(g_s.layout,COMMON_PATH));
+    strcpy(cfg.touch_combo_name[0],"  蓄力  ");
+    const Config original_cfg=cfg;
+    assert(TOUCH_ICON_BUTTON_COUNT==24 && touch_icon_builtin_count()==14);
+    const int original_controls[]={C_HEAVY,C_LIGHT,C_DODGE,C_SHEATHE,C_R,C_L,C_ZL,C_ZR,C_MENU,C_HMINUS,C_MAP,C_R3,
+        C_HDPAD,C_DPAD_TOGGLE,C_STICK,C_SETTINGS,C_COMBO,C_COMBO+1,C_COMBO+2,C_COMBO+3,C_COMBO+4,C_COMBO+5};
+    for(int button=0;button<22;++button) assert(ICON_CONTROLS[button]==original_controls[button]);
+    assert(ICON_CONTROLS[22]==C_AMMO_UP && ICON_CONTROLS[23]==C_AMMO_DOWN);
+    for(int i=1;i<=touch_icon_builtin_count();++i) assert(*touch_icon_builtin_name(i));
+    assert(!*touch_icon_builtin_name(0) && !*touch_icon_builtin_name(999));
+    for(int button=0;button<TOUCH_ICON_BUTTON_COUNT;++button) {
+        assert(*touch_icon_button_name(button)); expect_icon(button,0);
+        Layout expected=g_s.layout; set_icon(button,button%touch_icon_builtin_count()+1);
+        expected.icons[ICON_CONTROLS[button]]=g_s.layout.icons[ICON_CONTROLS[button]];
+        same_layout(g_s.layout,expected); same_combos(cfg,original_cfg); assert(cfg.volume==71);
+    }
+    const TestIcon a=test_icon(30),b=test_icon(150);
+    assert(a.hash!=b.hash && a.path!=b.path);
+    set_icon(4,-1,a.hash.c_str()); set_icon(16,3); set_icon(22,-1,a.hash.c_str()); set_icon(23,4);
+    const Layout layout_a=g_s.layout; assert(touch_template_save(0,"图标模板 A"));
+    const std::string file_a=read_text("touch_template_01.txt");
+    set_icon(4,-1,b.hash.c_str()); set_icon(16,12); set_icon(22,8); set_icon(23,-1,b.hash.c_str());
+    const Layout layout_b=g_s.layout; assert(touch_template_save(1,"图标模板 B"));
+    const std::string file_b=read_text("touch_template_02.txt");
+    set_icon(4,2); // Active edits do not rewrite either saved template.
+    for(int slot:{0,1,0,1}) {
+        const uint64_t generation=touch_layout_generation(); assert(touch_template_use(slot));
+        assert(touch_layout_generation()>generation); same_layout(g_s.layout,slot?layout_b:layout_a);
+        expect_icon(4,-1,(slot?b:a).hash.c_str()); expect_icon(16,slot?12:3);
+        expect_icon(22,slot?8:-1,slot?"":a.hash.c_str()); expect_icon(23,slot?-1:4,slot?b.hash.c_str():"");
+        assert(read_text("touch_template_01.txt")==file_a && read_text("touch_template_02.txt")==file_b);
+        assert(read_text(a.path.c_str())==a.bytes && read_text(b.path.c_str())==b.bytes);
+    }
+    touch_reset(); g_s={}; update(); same_layout(g_s.layout,layout_b);
+    assert(file_a.rfind("layout_version 3",0)==0);
+    const std::string v2=legacy_template(file_a,2);
+    write_text("touch_template_03.txt",v2); assert(touch_template_use(2));
+    Layout v2_expected=layout_a; v2_expected.icons[C_AMMO_UP]=v2_expected.icons[C_AMMO_DOWN]={};
+    same_layout(g_s.layout,v2_expected); same_combos(cfg,original_cfg);
+    expect_icon(4,-1,a.hash.c_str()); expect_icon(22,0); expect_icon(23,0);
+    assert(read_text("touch_template_03.txt")==v2);
+    const std::string legacy=legacy_template(file_a,1);
+    write_text("touch_template_04.txt",legacy); assert(touch_template_use(3));
+    same_combos(cfg,original_cfg);
+    Layout legacy_expected=layout_a;
+    for(int c:ICON_CONTROLS) legacy_expected.icons[c]={};
+    same_layout(g_s.layout,legacy_expected);
+    for(int button=0;button<TOUCH_ICON_BUTTON_COUNT;++button) expect_icon(button,0);
+    puts("PASS: all 24 icon controls preserve the original 0-21 identities and add ammo at 22/23; 14 builtins and independent custom-image templates round-trip through edits/switch/reload; v3 stores all 24, v2 preserves its 22 and defaults ammo, v1 defaults every icon while keeping exact combo names");
+}
+static void icon_import_failures() {
+    fresh(); assert(save_layout_file(g_s.layout,COMMON_PATH)); const TestIcon good=test_icon(65);
+    set_icon(4,-1,good.hash.c_str()); assert(touch_template_save(0,"导入基线"));
+    const Layout before=g_s.layout; const std::string disk=read_text(COMMON_PATH),saved=read_text("touch_template_01.txt");
+    auto unchanged=[&]() {
+        same_layout(g_s.layout,before); assert(read_text(COMMON_PATH)==disk && read_text("touch_template_01.txt")==saved);
+    };
+    const uint64_t generation=touch_layout_generation();
+    for(const std::string &hash:std::vector<std::string>{"","../outside", "D:/outside.rgba", "\\\\server\\share",std::string(64,'A'),std::string(63,'a'),std::string(65,'a'),std::string(64,'0')}) {
+        assert(!touch_icon_set(4,-1,hash.c_str(),generation)); unchanged(); assert(touch_layout_generation()==generation);
+    }
+    const int invalid_buttons[]={-1,TOUCH_ICON_BUTTON_COUNT,999};
+    for(int button:invalid_buttons) {
+        assert(!touch_icon_get(button,nullptr,nullptr) && !touch_icon_set(button,1,"",generation)); unchanged();
+    }
+    for(int choice:{-2,touch_icon_builtin_count()+1}) { assert(!touch_icon_set(4,choice,"",generation)); unchanged(); }
+    std::vector<std::string> corrupt={"TICO",good.bytes+'x',good.bytes.substr(0,good.bytes.size()-1)};
+    std::string bad_magic=good.bytes; bad_magic[0]='X'; corrupt.push_back(bad_magic);
+    std::string zero_width=good.bytes; zero_width[4]=zero_width[5]=0; corrupt.push_back(zero_width);
+    std::string wide=good.bytes; wide[4]=(char)129; wide[5]=0; corrupt.push_back(wide);
+    for(const std::string &bytes:corrupt) {
+        const TestIcon invalid=stored_icon(bytes); std::vector<unsigned char> pixels; int w=0,h=0;
+        assert(!load_icon_pixels(invalid.hash.c_str(),pixels,&w,&h) && pixels.empty());
+        assert(!touch_icon_set(4,-1,invalid.hash.c_str(),generation)); unchanged();
+    }
+    std::string changed=good.bytes; changed.back()^=1; write_text(good.path.c_str(),changed);
+    assert(!touch_icon_set(4,-1,good.hash.c_str(),generation)); unchanged(); write_text(good.path.c_str(),good.bytes);
+    assert(SDL_CreateDirectory("touch_layout_common.txt.tmp"));
+    assert(!touch_icon_set(4,1,"",generation)); unchanged(); assert(touch_layout_generation()==generation);
+    assert(SDL_RemovePath("touch_layout_common.txt.tmp"));
+    // A late import result from before a template switch or editor opening cannot change the current layout.
+    assert(touch_template_use(0)); assert(!touch_icon_set(4,1,"",generation)); unchanged();
+    const uint64_t editing_generation=touch_layout_generation(); touch_edit_begin(); update();
+    assert(!touch_icon_set(4,1,"",editing_generation)); editor_click(E_CANCEL); update();
+    assert(!touch_icon_set(4,1,"",editing_generation)); unchanged();
+    for(const std::string &extra:std::vector<std::string>{"icon guard -1 ../outside\n","icon guard 999 -\n","icon guard 1 -\n"}) {
+        write_text("touch_template_01.txt",saved+extra); char name[64];
+        assert(!touch_template_info(0,name,sizeof name) && !touch_template_use(0)); same_layout(g_s.layout,before);
+        assert(read_text(COMMON_PATH)==disk);
+    }
+    write_text("touch_template_01.txt",saved);
+    puts("PASS: invalid buttons/choices, path-like or invalid hashes, missing/corrupt/bad-size/trailing image data, hash mismatch, failed writes, stale import generations and malformed template icons leave active state intact");
+}
+static void icon_resource_fallback() {
+    fresh(); assert(save_layout_file(g_s.layout,COMMON_PATH));
+    const TestIcon missing=test_icon(90),corrupt=test_icon(91),valid=test_icon(92,128,128);
+    std::vector<unsigned char> pixels; int w=0,h=0;
+    assert(load_icon_pixels(valid.hash.c_str(),pixels,&w,&h) && w==128 && h==128 && pixels.size()==128*128*4);
+    set_icon(4,-1,missing.hash.c_str()); assert(touch_template_save(0,"资源缺失"));
+    assert(SDL_RemovePath(missing.path.c_str())); assert(touch_template_use(0)); expect_icon(4,-1,missing.hash.c_str());
+    set_icon(4,-1,corrupt.hash.c_str()); assert(touch_template_save(1,"资源损坏"));
+    write_text(corrupt.path.c_str(),corrupt.bytes.substr(0,9)); assert(touch_template_use(1)); expect_icon(4,-1,corrupt.hash.c_str());
+    for(int slot:{0,1}) {
+        assert(touch_template_use(slot)); const Layout selected=g_s.layout;
+        ImGuiIO &io=ImGui::GetIO(); io.DisplaySize=ImVec2((float)screen_w,(float)screen_h); io.DeltaTime=1.0f/60;
+        ImGui::NewFrame(); icon_textures_frame(); ImDrawList *dl=ImGui::GetBackgroundDrawList();
+        assert(!custom_icon(dl,selected.icons[C_R],ImVec2(200,200),30,IM_COL32_WHITE,1));
+        const int start=dl->VtxBuffer.Size;
+        control(dl,ImGui::GetFont(),selected,C_R,(float)screen_w,(float)screen_h,g_s,1);
+        const int count=dl->VtxBuffer.Size-start; Layout fallback=selected; fallback.icons[C_R]={};
+        control(dl,ImGui::GetFont(),fallback,C_R,(float)screen_w,(float)screen_h,g_s,1);
+        assert(count>0 && dl->VtxBuffer.Size-start==count*2);
+        for(int i=0;i<count;++i) {
+            const ImDrawVert &a=dl->VtxBuffer[start+i],&b=dl->VtxBuffer[start+count+i];
+            assert(a.pos.x==b.pos.x && a.pos.y==b.pos.y && a.uv.x==b.uv.x && a.uv.y==b.uv.y && a.col==b.col);
+        }
+        ImGui::Render(); same_layout(g_s.layout,selected); // Rendering never erases a recoverable asset reference.
+    }
+    set_icon(4,-1,valid.hash.c_str());
+    ImGui::NewFrame(); icon_textures_frame(); ImTextureData *texture=icon_texture(valid.hash.c_str());
+    assert(texture && texture->Width==128 && texture->Height==128 && !memcmp(texture->Pixels,pixels.data(),pixels.size()));
+    assert(custom_icon(ImGui::GetBackgroundDrawList(),g_s.layout.icons[C_R],ImVec2(200,200),30,IM_COL32_WHITE,1));
+    ImGui::Render();
+    puts("PASS: native image loader accepts the bounded 128px resource; absent/corrupt template resources retain their references and draw exactly the original R fallback; valid RGBA reaches the actual ImGui custom image texture");
 }
 static void auto_r_sources_and_ownership() {
     for(int floating:{0,1}) {
@@ -1754,30 +2228,34 @@ static void auto_r_sources_and_ownership() {
         auto down=[&]() { event(SDL_EVENT_FINGER_DOWN,1,origin.x,origin.y); };
         auto move=[&](float radius) { event(SDL_EVENT_FINGER_MOTION,1,origin.x+radius*g.r,origin.y); };
         auto cancel=[&]() { event(SDL_EVENT_FINGER_CANCELED,1,origin.x,origin.y); };
-        auto expect=[&](uint64_t touch,uint64_t physical=0) {
+        auto expect=[&](bool run,uint64_t touch=0,uint64_t physical=0) {
             const Input v=update(physical,physical!=0);
-            assert(v.touch_b==touch && v.b==(touch|physical)); no_stick_camera(v);
+            assert(v.run==run && g_s.run==run && v.touch_b==touch && v.b==(touch|physical)); no_stick_camera(v);
         };
-        down(); at(SDL_EVENT_FINGER_DOWN,C_R,2); move(.99f); expect(B(BTN_R));
-        move(.4f); expect(B(BTN_R)); assert(!g_s.run); cancel(); expect(B(BTN_R));
-        at(SDL_EVENT_FINGER_CANCELED,C_R,2); expect(0);
+        down(); at(SDL_EVENT_FINGER_DOWN,C_R,2); move(.99f); expect(true,B(BTN_R));
+        at(SDL_EVENT_FINGER_CANCELED,C_R,2); expect(true);
+        at(SDL_EVENT_FINGER_DOWN,C_R,2); expect(true,B(BTN_R));
+        move(.4f); expect(false,B(BTN_R)); cancel(); expect(false,B(BTN_R));
+        at(SDL_EVENT_FINGER_CANCELED,C_R,2); expect(false);
         strcpy(cfg.touch_weapon_combo[TOUCH_UNIVERSAL_PROFILE][0],"L+R");
-        down(); move(.99f); at(SDL_EVENT_FINGER_DOWN,C_COMBO,3); expect(B(BTN_L)|B(BTN_R));
-        move(.4f); expect(B(BTN_L)|B(BTN_R)); assert(!g_s.run);
-        at(SDL_EVENT_FINGER_CANCELED,C_COMBO,3); expect(0); cancel(); expect(0);
-        down(); move(.99f); expect(B(BTN_R),B(BTN_R));
-        cfg.touch_auto_r=0; expect(0,B(BTN_R)); assert(!g_s.run);
-        cfg.touch_auto_r=1; expect(B(BTN_R),B(BTN_R));
-        move(.4f); expect(0,B(BTN_R)); cancel(); expect(0,B(BTN_R)); assert(!g_s.run);
-        down(); move(.5f); expect(0);
+        down(); move(.99f); at(SDL_EVENT_FINGER_DOWN,C_COMBO,3); expect(true,B(BTN_L)|B(BTN_R));
+        at(SDL_EVENT_FINGER_CANCELED,C_COMBO,3); expect(true);
+        at(SDL_EVENT_FINGER_DOWN,C_COMBO,3); expect(true,B(BTN_L)|B(BTN_R));
+        move(.4f); expect(false,B(BTN_L)|B(BTN_R));
+        at(SDL_EVENT_FINGER_CANCELED,C_COMBO,3); expect(false); cancel(); expect(false);
+        down(); move(.99f); expect(true,0,B(BTN_R)); expect(true);
+        cfg.touch_auto_r=0; expect(false,0,B(BTN_R));
+        cfg.touch_auto_r=1; expect(true,0,B(BTN_R));
+        move(.4f); expect(false,0,B(BTN_R)); cancel(); expect(false,0,B(BTN_R));
+        down(); move(.5f); expect(false);
         event(SDL_EVENT_FINGER_DOWN,2,origin.x+g.r*.25f,origin.y);
         const Finger *extra=finger(g_s,2); assert(!extra || (extra->kind!=F_STICK && extra->kind!=F_CAMERA));
-        event(SDL_EVENT_FINGER_MOTION,2,origin.x+g.r*2,origin.y); expect(0); assert(!g_s.run);
-        move(.99f); expect(B(BTN_R)); cancel(); expect(0);
-        event(SDL_EVENT_FINGER_MOTION,2,origin.x+g.r*3,origin.y); expect(0); assert(!g_s.run);
-        event(SDL_EVENT_FINGER_UP,2,origin.x+g.r*3,origin.y); expect(0);
+        event(SDL_EVENT_FINGER_MOTION,2,origin.x+g.r*2,origin.y); expect(false);
+        move(.99f); expect(true); cancel(); expect(false);
+        event(SDL_EVENT_FINGER_MOTION,2,origin.x+g.r*3,origin.y); expect(false);
+        event(SDL_EVENT_FINGER_UP,2,origin.x+g.r*3,origin.y); expect(false);
     }
-    puts("PASS: AutoR releases only its own contribution; held manual touch R, L+R combos and physical R stay independent; live Off/On updates work, and secondary stick touches cannot activate R or inherit ownership");
+    puts("PASS: running-only AutoR and native manual R are independent in both release orders for touch R, L+R combos and physical R; live Off/On updates work, and secondary stick touches cannot activate running or inherit ownership");
 }
 static void auto_r_lifecycle() {
     for(int floating:{0,1}) for(int mode=0;mode<10;++mode) {
@@ -1787,7 +2265,7 @@ static void auto_r_lifecycle() {
         const ImVec2 origin=floating?ImVec2(screen_w*.35f,screen_h*.75f):g.c;
         event(SDL_EVENT_FINGER_DOWN,1,origin.x,origin.y);
         event(SDL_EVENT_FINGER_MOTION,1,origin.x+g.r*.99f,origin.y);
-        Input v=update(B(BTN_R),true); assert(g_s.run && v.touch_b==B(BTN_R)); no_stick_camera(v);
+        Input v=update(B(BTN_R),true); assert(v.run && g_s.run && !v.touch_b && v.b==B(BTN_R)); no_stick_camera(v);
         switch(mode) {
             case 0: game_menu_state(true); break;
             case 1: settings_open=true; break;
@@ -1802,16 +2280,16 @@ static void auto_r_lifecycle() {
         }
         auto stopped=[&]() {
             const Input input=update(B(BTN_R),true,mode==5);
-            if(g_s.run || (input.touch_b&B(BTN_R))) fprintf(stderr,"AUTOR LIFECYCLE FAILURE: floating=%d mode=%d run=%d touch=%llu\n",floating,mode,g_s.run,(unsigned long long)input.touch_b);
-            assert(!g_s.run && !(input.touch_b&B(BTN_R)) && input.b==B(BTN_R)); no_stick_camera(input);
+            if(input.run || g_s.run || input.touch_b) fprintf(stderr,"AUTOR LIFECYCLE FAILURE: floating=%d mode=%d run=%d touch=%llu\n",floating,mode,input.run,(unsigned long long)input.touch_b);
+            assert(!input.run && !g_s.run && !input.touch_b && input.b==B(BTN_R)); no_stick_camera(input);
         };
         stopped(); event(SDL_EVENT_FINGER_UP,1,screen_w+10000.f,-10000.f); stopped();
         if(mode==0) game_menu_state(false);
         settings_open=false; cfg.touch_controls=TOUCH_ON; cfg.touch_show[TB_STICK]=1;
         if(g_s.edit) { editor_click(E_CANCEL); update(); }
-        v=update(B(BTN_R),true); assert(!g_s.run && !v.touch_b && v.b==B(BTN_R)); no_stick_camera(v);
+        v=update(B(BTN_R),true); assert(!v.run && !g_s.run && !v.touch_b && v.b==B(BTN_R)); no_stick_camera(v);
     }
-    puts("PASS: fixed/floating AutoR clears in game menus, overlays, editor, Off, hidden stick, typing, reset, scene/template changes and Auto controller hiding; old UP/return cannot revive touch R and physical R stays intact");
+    puts("PASS: fixed/floating running-only AutoR clears in game menus, overlays, editor, Off, hidden stick, typing, reset, scene/template changes and Auto controller hiding; old UP/return cannot revive running and physical R stays intact");
 }
 static void preview(const char *path) {
     SDL_Surface *surface=SDL_CreateSurface(screen_w,screen_h,SDL_PIXELFORMAT_RGBA32);assert(surface);
@@ -1871,15 +2349,17 @@ int main(int argc,char **argv) {
     window=SDL_CreateWindow("MHGU common touch host regression",screen_w,screen_h,SDL_WINDOW_HIDDEN); assert(window);
     ImGui::CreateContext(); ImGuiIO &io=ImGui::GetIO(); io.IniFilename=nullptr; io.LogFilename=nullptr;
     io.BackendFlags|=ImGuiBackendFlags_RendererHasTextures; io.Fonts->AddFontDefaultVector();
-    common_startup_and_legacy(); ranged_guard_migration(); common_r_aim_identity(); common_controls_and_names();
+    common_startup_and_legacy(); ranged_guard_migration(); common_r_aim_identity(); ammo_default_migration(); common_controls_and_names();
     touch_button_sources(); item_gestures(); auto_r(); floating_stick();
     dpad_visibility(1280,720); dpad_visibility(640,360); layout_roundtrip(); show_settings();
     common_editor_and_failure(); template_roundtrip_and_failure(); template_corrupt_input(); auto_r_sources_and_ownership(); auto_r_lifecycle();
+    icon_template_isolation(); icon_import_failures(); icon_resource_fallback();
     quest_dpad_camera(); universal_floating_stick(); universal_floating_boundaries(); universal_floating_priority_and_reset();
     common_floating_editor_roundtrip(); ordinary_button_drag(); button_drag_release_and_multitouch(); button_drag_lifecycle(); button_drag_exclusions();
     bow_charge_drag(); bow_drag_sources(); bow_drag_lifecycle(); bow_drag_manual_aim();
     editor_hud_quest_only(); editor_hud_dragging(); editor_hud_feedback(); editor_hud_priority_and_multitouch();
-    ammo_repeat(); item_gesture_lifecycle(); target_switch(1280,720); target_switch(2520,1080); target_switch(3840,1080); persistent_target_lock();
+    ammo_repeat(); arrow_gesture_ownership(); ammo_visibility_and_editor(); arrow_gesture_lifecycle(); arrow_release_pending_and_overlap(); item_gesture_lifecycle();
+    target_switch(1280,720); target_switch(2520,1080); target_switch(3840,1080); persistent_target_lock();
     ImGui::DestroyContext();
     for(const ImVec2 size:{ImVec2(640,360),ImVec2(1280,720),ImVec2(2520,1080),ImVec2(3840,1080)}) {
         for(bool quest:{false,true}) {
@@ -1905,9 +2385,16 @@ int main(int argc,char **argv) {
         const ImVec2 origin=floating?ImVec2(screen_w*.35f,screen_h*.75f):g.c;
         event(SDL_EVENT_FINGER_DOWN,1,origin.x,origin.y);
         event(SDL_EVENT_FINGER_MOTION,1,origin.x+g.r,origin.y); const Input v=update();
-        assert(g_s.run==(enabled!=0) && v.touch_b==(enabled?B(BTN_R):0));
+        assert(v.run==(enabled!=0) && g_s.run==v.run && !v.touch_b && !v.b);
         char path[100]; snprintf(path,sizeof path,"touch-auto-r-%s-%s-1280x720.png",floating?"floating":"fixed",enabled?"on":"off");
         preview(path); event(SDL_EVENT_FINGER_CANCELED,1,origin.x+g.r,origin.y); update();
+    }
+    for(const ImVec2 size:{ImVec2(640,360),ImVec2(1280,720),ImVec2(2520,1080)}) {
+        fresh((int)size.x,(int)size.y); cfg.language=2; ranged=WEAPON_BOW; weapon_override=10; local_hunter=0x08004000;
+        cfg.touch_show[TB_AMMO]=1; enable_universal_combos(); update(); char path[100];
+        snprintf(path,sizeof path,"touch-common-ammo-combos-%dx%d.png",screen_w,screen_h); preview(path);
+        touch_edit_begin(); update(); snprintf(path,sizeof path,"touch-common-ammo-editor-%dx%d.png",screen_w,screen_h); preview(path);
+        editor_click(E_CANCEL); update();
     }
     SDL_DestroyWindow(window); SDL_Quit();
     puts("PASS: all common layout/template and retained touch control regressions (host stubs, no APK/game execution)"); return 0;

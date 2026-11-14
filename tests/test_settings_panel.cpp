@@ -79,6 +79,52 @@ extern "C" void padmap_cancel(void) {}
 extern "C" void padmap_forget(int) {}
 extern "C" void textinput_menu_keyboard(bool) {}
 extern "C" void textinput_menu_reopen(void) {}
+struct IconFixture { int choice = 0; std::string hash; };
+static IconFixture icon_choices[TOUCH_ICON_BUTTON_COUNT];
+static uint64_t icon_generation = 1;
+static bool icon_save_ok = true, icon_picker_ok = true, icon_picker_pending;
+static int icon_picker_result, icon_picker_requests, icon_save_calls;
+static std::string icon_picker_hash;
+extern "C" bool ui_request_touch_icon(void) {
+    ++icon_picker_requests;
+    if (!icon_picker_ok || icon_picker_pending) return false;
+    return icon_picker_pending = true;
+}
+extern "C" int ui_take_touch_icon(char hash[65]) {
+    if (!icon_picker_result) return 0;
+    int result = icon_picker_result;
+    icon_picker_result = 0;
+    icon_picker_pending = false;
+    SDL_strlcpy(hash, icon_picker_hash.c_str(), 65);
+    return result;
+}
+extern "C" const char *touch_icon_button_name(int button) {
+    static const char *const names[] = {"Heavy attack  A", "Light attack  X", "Dodge  B", "Sheathe  Y", "Aim  R",
+        "Camera  L", "Target  ZL", "Special  ZR", "Menu  +", "Minus  -", "Left stick click", "Right stick click",
+        "D-pad", "D-pad visibility", "Movement", "Settings"};
+    assert(button >= 0 && button < TOUCH_ICON_BUTTON_COUNT);
+    return button < 16 ? names[button] : button == 22 ? "Next ammo" : button == 23 ? "Previous ammo" : "Combined button";
+}
+extern "C" int touch_icon_builtin_count(void) { return 14; }
+extern "C" const char *touch_icon_builtin_name(int choice) {
+    static const char *const names[] = {"Sword", "Dodge", "Shield", "Burst", "Target", "Camera", "Menu", "Map",
+        "Settings", "Sheathe", "Run", "Crosshair", "Shot", "Bow"};
+    return names[choice - 1];
+}
+extern "C" uint64_t touch_layout_generation(void) { return icon_generation; }
+extern "C" bool touch_icon_get(int button, int *choice, char hash[65]) {
+    assert(button >= 0 && button < TOUCH_ICON_BUTTON_COUNT);
+    if (choice) *choice = icon_choices[button].choice;
+    if (hash) SDL_strlcpy(hash, icon_choices[button].hash.c_str(), 65);
+    return true;
+}
+extern "C" bool touch_icon_set(int button, int choice, const char *hash, uint64_t expected_generation) {
+    ++icon_save_calls;
+    if (!icon_save_ok || expected_generation != icon_generation) return false;
+    icon_choices[button] = {choice, hash ? hash : ""};
+    ++icon_generation;
+    return true;
+}
 struct TemplateFixture { std::string name; Config combo; };
 static TemplateFixture templates[TOUCH_TEMPLATE_COUNT];
 static int template_info_queries, edit_target = -1, edit_cancelled;
@@ -113,7 +159,9 @@ extern "C" bool touch_template_use(int slot) {
            sizeof next.touch_weapon_combo_pad[TOUCH_UNIVERSAL_PROFILE]);
     memcpy(next.touch_combo_name, from.touch_combo_name, sizeof next.touch_combo_name);
     char error[256];
-    return config_save(&next, error, sizeof error);
+    bool ok = config_save(&next, error, sizeof error);
+    if (ok) ++icon_generation;
+    return ok;
 }
 extern "C" void touch_edit_begin(void) { edit_target = -2; }
 extern "C" void touch_edit_cancel(void) { edit_target = -1; ++edit_cancelled; }
@@ -250,7 +298,7 @@ static void assert_combo_snapshot(const Config &expected) {
     assert(!memcmp(actual.touch_combo_name, expected.touch_combo_name, sizeof actual.touch_combo_name));
 }
 static void template_regression() {
-    static_assert(TOUCH_TEMPLATE_COUNT == 20, "The shared layout has twenty independent snapshots");
+    static_assert(TOUCH_TEMPLATE_COUNT == 40, "The shared layout has forty independent snapshots");
     Config fixture = config_editable();
     for (int slot : {0, 19}) {
         templates[slot].name = slot ? "远程连招" : "近战通用";
@@ -276,6 +324,9 @@ static void template_regression() {
         seek_row(row.c_str());
         if (slot % 2) click_focused_row(); else confirm();
         assert(template_uses.empty() && template_saves.empty());
+        assert(focused_row("tp.save"));
+        back();
+        assert(focused_row(row.c_str()));
     }
     seek_row("tp.1");
     confirm();
@@ -299,6 +350,7 @@ static void template_regression() {
     assert(template_saves.size() == 2 && template_saves.back() == 1);
     assert(templates[0].name == "近战通用" && templates[19].name == "远程连招");
 
+    back();
     seek_row("tp.0");
     confirm();
     seek_row("tp.use");
@@ -306,6 +358,7 @@ static void template_regression() {
     assert(template_uses.size() == 1 && template_uses.back() == 0);
     assert_combo_snapshot(templates[0].combo);
     assert(!settings_panel_dirty()); // Applying must replace saved and draft together.
+    back();
     back();
     seek_row("touch.hud");
     confirm();
@@ -330,6 +383,7 @@ static void template_regression() {
     assert_combo_snapshot(templates[19].combo);
 
     back();
+    back();
     seek_row("touch.hud");
     confirm();
     open_templates();
@@ -343,6 +397,7 @@ static void template_regression() {
     assert(config_editable().touch_hud == !original_hud && !settings_panel_dirty());
     assert_combo_snapshot(templates[0].combo);
     // Saving an unsaved settings edit resolves the draft before taking the snapshot.
+    back();
     back();
     seek_row("touch.hud");
     confirm();
@@ -379,6 +434,7 @@ static void template_regression() {
     // Failed template operations leave the current common configuration intact.
     const Config before_failure = config_editable();
     template_use_ok = false;
+    back();
     seek_row("tp.19");
     confirm();
     seek_row("tp.use");
@@ -388,6 +444,7 @@ static void template_regression() {
     assert_combo_snapshot(before_failure);
     template_use_ok = true;
     template_save_ok = false;
+    back();
     seek_row("tp.3");
     confirm();
     enter_text("tp.name", "写入失败");
@@ -396,6 +453,7 @@ static void template_regression() {
     assert(template_saves.size() == 4 && templates[3].name.empty());
     template_save_ok = true;
     // Failed settings Save must not reach the template use callback.
+    back();
     back();
     seek_row("touch.hud");
     confirm();
@@ -423,7 +481,136 @@ static void template_regression() {
     back();
     opened = false;
     frame();
-    puts("PASS: real settings-panel ImGui loop: twenty independent template slots, Chinese naming, explicit Save/Use, overwrite confirmation, draft Save/Discard/Cancel/Back, failure retention and combo snapshot refresh (touch API stubs; no Android/game execution)");
+    puts("PASS: real settings-panel ImGui loop: forty independent template slots, Chinese naming, explicit Save/Use, overwrite confirmation, draft Save/Discard/Cancel/Back, failure retention and combo snapshot refresh (touch API stubs; no Android/game execution)");
+}
+static void empty_template_detail_regression() {
+    Config fixture = config_editable();
+    fixture.language = 2;
+    config_store_loaded(&fixture);
+    config_runtime_init(&fixture);
+    const size_t before = template_saves.size();
+    templates[4].name.clear();
+    templates[5].name.clear();
+    templates[39].name.clear();
+    opened = true;
+    idle();
+    open_templates();
+    seek_row("tp.4");
+    confirm();
+    assert(focused_row("tp.save")); // Entering an empty slot is immediately ready to save.
+    confirm();
+    assert(template_saves.size() == before + 1 && template_saves.back() == 4);
+    assert(templates[4].name == "模板 5" && !settings_panel_confirming());
+    back();
+    assert(focused_row("tp.4"));
+    seek_row("tp.5");
+    confirm();
+    assert(focused_row("tp.save"));
+    confirm();
+    assert(template_saves.size() == before + 2 && template_saves.back() == 5);
+    assert(templates[5].name == "模板 6" && templates[4].name == "模板 5");
+    back();
+    seek_row("tp.39");
+    confirm();
+    assert(focused_row("tp.save"));
+    confirm();
+    assert(template_saves.size() == before + 3 && template_saves.back() == 39);
+    assert(templates[39].name == "模板 40" && templates[19].name == "远程连招");
+    back();
+    back();
+    opened = false;
+    frame();
+    fixture.language = 0;
+    config_store_loaded(&fixture);
+    config_runtime_init(&fixture);
+    puts("PASS: empty template opens its own detail page focused on Save; slots 5, 6 and 40 save directly with independent default Chinese names and slot 20 stays unchanged");
+}
+static void touch_icon_regression() {
+    static_assert(TOUCH_ICON_BUTTON_COUNT == 24, "Append two ammo icons without renumbering the first 22");
+    opened = true;
+    idle();
+    seek_row("touch.icons");
+    confirm();
+    for (int button = 0; button < TOUCH_ICON_BUTTON_COUNT; ++button) {
+        seek_row(("ti." + std::to_string(button)).c_str());
+        confirm();
+        assert(focused_row("ti.default"));
+        const int choice = button % touch_icon_builtin_count() + 1;
+        seek_row(("ti.builtin." + std::to_string(choice)).c_str());
+        confirm();
+        assert(icon_choices[button].choice == choice && !settings_panel_dirty());
+        back();
+    }
+    for (int button = 0; button < TOUCH_ICON_BUTTON_COUNT; ++button)
+        assert(icon_choices[button].choice == button % touch_icon_builtin_count() + 1);
+    seek_row("ti.21"); // The sixth combo has its own icon.
+    confirm();
+    const int saved = icon_choices[21].choice;
+    const int neighbor = icon_choices[20].choice;
+    icon_save_ok = false;
+    seek_row("ti.default");
+    confirm();
+    assert(icon_choices[21].choice == saved);
+    icon_save_ok = true;
+    seek_row("ti.import");
+    confirm();
+    assert(icon_picker_pending);
+    icon_picker_result = -1;
+    idle();
+    assert(icon_choices[21].choice == saved);
+    seek_row("ti.import");
+    confirm();
+    icon_picker_result = -2;
+    idle();
+    assert(icon_choices[21].choice == saved);
+    seek_row("ti.import");
+    confirm();
+    icon_picker_hash = std::string(64, 'a');
+    icon_picker_result = 1;
+    idle();
+    assert(icon_choices[21].choice == -1 && icon_choices[21].hash == icon_picker_hash);
+    assert(icon_choices[20].choice == neighbor);
+    const int accepted = icon_save_calls;
+    seek_row("ti.import");
+    confirm();
+    ++icon_generation; // A different layout was installed while Android's picker was open.
+    icon_picker_result = 1;
+    idle();
+    assert(icon_save_calls == accepted);
+    seek_row("ti.import");
+    confirm();
+    back();
+    seek_row("ti.20");
+    confirm();
+    icon_picker_result = 1;
+    idle();
+    assert(icon_save_calls == accepted && icon_choices[20].choice == neighbor);
+    seek_row("ti.import");
+    confirm();
+    opened = false;
+    frame();
+    opened = true;
+    idle();
+    seek_row("touch.icons");
+    confirm();
+    seek_row("ti.20");
+    confirm();
+    icon_picker_result = 1;
+    idle();
+    assert(icon_save_calls == accepted); // Reopening the same button cannot revive a closed request.
+    icon_picker_ok = false;
+    seek_row("ti.import");
+    confirm();
+    assert(!icon_picker_pending && icon_save_calls == accepted);
+    icon_picker_ok = true;
+    seek_row("ti.default");
+    confirm();
+    assert(icon_choices[20].choice == 0 && icon_choices[21].choice == -1);
+    back();
+    back();
+    opened = false;
+    frame();
+    puts("PASS: all 24 common button icon rows including six combos and two independent ammo arrows, default/built-in/custom choices, immediate save, failure/cancel retention, layout generation and closed/switched picker rejection (real UI, stub importer)");
 }
 static void combo_layout_regression() {
     static_assert(TOUCH_UNIVERSAL_PROFILE == 19 && TOUCH_LAYOUT_PROFILES == 20,
@@ -513,12 +700,15 @@ static void combo_layout_regression() {
     puts("PASS: all six common combos accept Chinese names and independent controller mappings through the real UI; legacy weapon/layout bindings remain unchanged and there is no weapon selector");
 }
 static void touch_button_rows_regression() {
+    assert(config_defaults().touch_show[TB_AMMO] == 1);
     for (int legacy_aim = 0; legacy_aim < 2; legacy_aim++) {
         Config fixture = config_editable();
         fixture.touch_show[TB_AIM] = legacy_aim;
         fixture.touch_show[TB_GUARD] = legacy_aim;
+        fixture.touch_show[TB_AMMO] = !legacy_aim;
         const std::string legacy = std::string("ShowAim = ") + (fixture.touch_show[TB_AIM] ? "On\n" : "Off\n");
-        std::ofstream("obj/settings-test/panel-settings.ini", std::ios::binary) << "[Touch]\n" << legacy;
+        const std::string ammo = std::string("ShowAmmo = ") + (fixture.touch_show[TB_AMMO] ? "On\n" : "Off\n");
+        std::ofstream("obj/settings-test/panel-settings.ini", std::ios::binary) << "[Touch]\n" << legacy << ammo;
         config_store_loaded(&fixture);
         config_runtime_init(&fixture);
         opened = true;
@@ -528,7 +718,7 @@ static void touch_button_rows_regression() {
         seek_row("tb.0");
         for (int i = 0; i < TB_COUNT; i++) {
             if (i == TB_RANGED || i == TB_FIRE || i == TB_SECOND || i == TB_AIM ||
-                i == TB_RSPECIAL || i == TB_AMMO || i == TB_MENU_ZL || i == TB_MENU_ZR) continue;
+                i == TB_RSPECIAL || i == TB_MENU_ZL || i == TB_MENU_ZR) continue;
             const std::string row = "tb." + std::to_string(i);
             assert(focused_row(row.c_str()));
             down();
@@ -538,20 +728,24 @@ static void touch_button_rows_regression() {
         seek_row(guard.c_str());
         confirm();
         assert(settings_panel_dirty());
+        seek_row(("tb." + std::to_string(TB_AMMO)).c_str());
+        confirm();
+        assert(config_editable().touch_show[TB_AMMO] == fixture.touch_show[TB_AMMO]);
         back();
         seek_row("save");
         confirm();
         assert(!settings_panel_dirty());
         const Config saved = config_editable();
         for (int i = 0; i < TB_COUNT; i++)
-            assert(saved.touch_show[i] == (i == TB_GUARD ? !fixture.touch_show[i] : fixture.touch_show[i]));
+            assert(saved.touch_show[i] == (i == TB_GUARD || i == TB_AMMO ? !fixture.touch_show[i] : fixture.touch_show[i]));
         std::ifstream in("obj/settings-test/panel-settings.ini", std::ios::binary);
         const std::string ini((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
         assert(ini.find(legacy) != std::string::npos);
+        assert(ini.find(saved.touch_show[TB_AMMO] ? "ShowAmmo = On" : "ShowAmmo = Off") != std::string::npos);
         opened = false;
         frame();
     }
-    puts("PASS: common touch-button rows retain Aim (R) and native item arrows, omit retired ranged-only controls, and save the R visibility toggle through legacy ShowGuard without changing other settings");
+    puts("PASS: common touch-button rows retain Aim (R), native item arrows and independent ammo arrows; ShowAmmo defaults On and saves both On/Off independently, while retired ranged controls stay hidden and their settings unchanged");
 }
 static void auto_r_regression() {
     char error[256];
@@ -628,7 +822,7 @@ static void auto_r_regression() {
     frame();
     assert(config_save(&before_reset, error, sizeof error)); // Retain prior combo fixtures for the previews.
     saved_choice(0);
-    puts("PASS: AutoR switch follows Floating left stick; draft, Save, Cancel, Discard, persisted On/Off and Reset Controls work without changing manual R or floating-stick choices");
+    puts("PASS: automatic-running switch (AutoR) follows Floating left stick; draft, Save, Cancel, Discard, persisted On/Off and Reset Controls work without changing manual R or floating-stick choices");
 }
 // Capture the actual phone-style settings draw lists on the host, not a mockup or an Android/game screenshot.
 static void template_previews() {
@@ -709,18 +903,46 @@ static void template_previews() {
         assert(SDL_SavePNG(surface, path));
         printf("HOST PREVIEW: %s (640x360, Chinese phone-style settings, actual ImGui draw lists / SDL software renderer; no Android/game execution)\n", path);
     };
+    capture("settings-common-templates-zh-640x360.png");
     seek_row("tp.0");
     confirm();
-    capture("settings-common-templates-zh-640x360.png");
     seek_row("tp.use");
     capture("settings-template-name-zh-640x360.png");
     back();
+    templates[3].name.clear();
+    back();
+    open_templates();
+    seek_row("tp.3");
+    confirm();
+    capture("settings-empty-template-detail-zh-640x360.png");
+    back();
+    back();
+    seek_row("touch.icons");
+    confirm();
+    seek_row("ti.21");
+    capture("settings-touch-icons-list-zh-640x360.png");
+    confirm();
+    capture("settings-touch-icon-picker-zh-640x360.png");
+    back();
+    seek_row("ti.22");
+    capture("settings-ammo-icons-list-zh-640x360.png");
+    seek_row("ti.23");
+    capture("settings-ammo-previous-icon-zh-640x360.png");
+    confirm();
+    capture("settings-ammo-icon-picker-zh-640x360.png");
+    back();
+    back();
     seek_row("touch.auto_r");
-    capture("settings-stick-auto-r-off-zh-640x360.png");
+    capture("settings-stick-run-off-zh-640x360.png");
     seek_row("touch.buttons");
+    capture("settings-arrow-help-zh-640x360.png");
     confirm();
     seek_row(("tb." + std::to_string(TB_GUARD)).c_str());
     capture("settings-aim-r-zh-640x360.png");
+    seek_row(("tb." + std::to_string(TB_AMMO)).c_str());
+    capture("settings-ammo-arrows-zh-640x360.png");
+    seek_row(("tb." + std::to_string(TB_ITEM_ARROWS)).c_str());
+    capture("settings-item-arrows-zh-640x360.png");
     seek_row("tc.5");
     capture("settings-combo-names-zh-640x360.png");
     seek_row("tc.0");
@@ -790,9 +1012,11 @@ int main(int argc, char **argv) {
     }
     if (touch_presets_only) {
         template_regression();
+        empty_template_detail_regression();
         combo_layout_regression();
         touch_button_rows_regression();
         auto_r_regression();
+        touch_icon_regression();
         template_previews();
         ImGui::DestroyContext();
         remove("obj/settings-test/panel-settings.ini");

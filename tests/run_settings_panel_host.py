@@ -20,7 +20,7 @@ for line in setup.stdout.splitlines():
 toolchain = Path(os.environ.get('ANDROID_NDK_HOME', r'C:\Users\Public\Android\Sdk\ndk\30.0.16248370')) / 'toolchains/llvm/prebuilt/windows-x86_64/bin'
 sdl = deps / 'SDL3-3.4.18'
 imgui = project / 'third_party/cimgui/imgui'
-common = ['--target=x86_64-pc-windows-msvc', '-g', '-gcodeview', '-D_CRT_SECURE_NO_WARNINGS', '-D_CRT_NONSTDC_NO_DEPRECATE',
+common = ['--target=x86_64-pc-windows-msvc', '-g', '-gcodeview', '-D_CRT_SECURE_NO_WARNINGS', '-D_CRT_NONSTDC_NO_DEPRECATE', '-DMHGU_TOUCH_ICON_PICKER_TEST',
           '-DW_OK=2', '-Dstrtok_r=strtok_s', '-Wno-deprecated-declarations', '-Wno-microsoft-goto',
           '-I' + str(deps), '-I' + str(project / 'runtime'), '-I' + str(imgui), '-I' + str(sdl / 'include')]
 objects = []

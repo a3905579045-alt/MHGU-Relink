@@ -15,17 +15,27 @@ bool touch_event(const SDL_Event *e);  // a finger event: true when it was the c
 // ORs into buttons and returns the buttons contributed by touch, including overlaps with other input sources.
 uint64_t touch_input(bool pad_connected, bool typing, uint64_t *buttons, int *lx, int *ly, int *rx, int *ry,
                      float *cam_dx, float *cam_dy);
+bool touch_running(void);  // full left stick requests running only, independently of native R
 // game thread (runtime/overlay.cpp): drawn over the game, under the port's menus
 bool touch_visible(void);
 bool touch_drawn(void);  // (something of them is on the screen: the settings button alone, when they are hidden)
 void touch_draw(float display_w, float display_h);
 void touch_edit_begin(void);  // the layout editor (settings menu: Controls), once the menu is closed
 void touch_edit_cancel(void);  // (the settings menu's unsaved-changes dialog cancelled: it stays open)
-enum { TOUCH_TEMPLATE_COUNT = 20, TOUCH_TEMPLATE_NAME_MAX = 64 };
-// Templates store positions, sizes, HUD offsets and all six combo definitions and names.
-bool touch_template_info(int slot, char *name, int name_size); // false for empty or invalid slots (0..19)
+enum { TOUCH_TEMPLATE_COUNT = 40, TOUCH_TEMPLATE_NAME_MAX = 64 };
+// Templates store positions, sizes, HUD offsets, icons and all six combo definitions and names.
+bool touch_template_info(int slot, char *name, int name_size); // false for empty or invalid slots (0..39)
 bool touch_template_save(int slot, const char *name); // snapshot the current layout, including an editor draft
 bool touch_template_use(int slot); // save and apply the snapshot; unavailable during layout editing
+enum { TOUCH_ICON_BUTTON_COUNT = 24, TOUCH_ICON_HASH_SIZE = 65 };
+// Icon choice: 0 default, 1..builtin_count built-in, -1 immutable custom image.
+const char *touch_icon_button_name(int button);
+int touch_icon_builtin_count(void);
+const char *touch_icon_builtin_name(int choice);
+bool touch_icon_get(int button, int *choice, char hash[TOUCH_ICON_HASH_SIZE]);
+uint64_t touch_layout_generation(void);
+// Reject stale picker results; persist only after a complete validated image and successful layout save.
+bool touch_icon_set(int button, int choice, const char *hash, uint64_t expected_generation);
 void touch_lock_toggle(void);  // the lock-on (a controller's right stick click in a hunt: runtime/host_input.c)
 // the lock-on's L presses, given every button pressed now and whether the camera is being turned (host_input.c)
 uint64_t touch_lock_buttons(uint64_t buttons, bool cam_input);

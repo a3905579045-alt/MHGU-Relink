@@ -149,6 +149,63 @@ public class GameActivity extends SDLActivity {
 
     private static final int MICROPHONE_REQUEST = 0x4d43;  // (el requestCode de requestPermissions: "MC")
 
+    private static final int TOUCH_ICON_REQUEST = 0x5449;
+    private boolean touchIconPending;
+    private static native void nativeTouchIconResult(int status, String hash);
+
+    public static void chooseTouchIcon(int language) {
+        SDLActivity activity = mSingleton;
+        if (!(activity instanceof GameActivity)) {
+            nativeTouchIconResult(-2, null);
+            return;
+        }
+        GameActivity game = (GameActivity) activity;
+        game.runOnUiThread(() -> {
+            if (game.touchIconPending) return;
+            Intent pick = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            pick.addCategory(Intent.CATEGORY_OPENABLE);
+            pick.setType("image/*");
+            pick.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            game.touchIconPending = true;
+            try {
+                game.startActivityForResult(pick, TOUCH_ICON_REQUEST);
+            } catch (RuntimeException e) {
+                game.touchIconPending = false;
+                Log.w(TAG, "touch icon picker unavailable", e);
+                nativeTouchIconResult(-2, null);
+            }
+        });
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (requestCode != TOUCH_ICON_REQUEST) {
+            super.onActivityResult(requestCode, resultCode, data);
+            return;
+        }
+        if (!touchIconPending) return;
+        if (resultCode != RESULT_OK || data == null || data.getData() == null) {
+            touchIconPending = false;
+            nativeTouchIconResult(-1, null);
+            return;
+        }
+        android.net.Uri image = data.getData();
+        File root = FilesFolder.get(this);
+        new Thread(() -> {
+            String hash = null;
+            try {
+                hash = TouchIconImport.importImage(getContentResolver(), image, root);
+            } catch (Exception | OutOfMemoryError e) {
+                Log.w(TAG, "touch icon import failed", e);
+            }
+            final String imported = hash;
+            runOnUiThread(() -> {
+                touchIconPending = false;
+                nativeTouchIconResult(imported == null ? -2 : 1, imported);
+            });
+        }, "touch-icon-import").start();
+    }
+
     /**
      * "Guardar y reiniciar" del menú de opciones (runtime/ui.c restart_application, por JNI desde el hilo de SDL):
      * PhoenixActivity, en su propio proceso, espera a que este termine (el código nativo hace exit(0) al volver de acá,

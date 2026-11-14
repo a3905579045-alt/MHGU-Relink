@@ -4,6 +4,7 @@
 // Display mode, size and the 3D resolution come from the settings (runtime/config.c, mhgurecomp.ini).
 #include <limits.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -32,6 +33,8 @@ void ui_request_action(bool restart) { SDL_SetAtomicInt(&requested_action, resta
 void ui_request_exit_menu(void) { SDL_SetAtomicInt(&requested_action, 14); }
 #ifndef __ANDROID__
 void ui_request_import(int what) { SDL_SetAtomicInt(&requested_action, 2 + what); }
+bool ui_request_touch_icon(void) { return false; }
+int ui_take_touch_icon(char hash[65]) { if (hash) hash[0] = 0; return 0; }
 #endif
 bool ui_action_failed(void) { return SDL_SetAtomicInt(&action_failed, 0) != 0; }
 #ifndef __ANDROID__
@@ -52,6 +55,57 @@ int ui_take_picked_folder(char *out, size_t size) {
 }
 #endif
 #ifdef __ANDROID__
+static pthread_mutex_t touch_icon_lock = PTHREAD_MUTEX_INITIALIZER;
+static SDL_AtomicInt touch_icon_requested;
+static bool touch_icon_waiting;
+static int touch_icon_status;
+static char touch_icon_hash[65];
+
+bool ui_request_touch_icon(void) {
+    pthread_mutex_lock(&touch_icon_lock);
+    bool ready = !touch_icon_waiting;
+    if (ready) {
+        touch_icon_waiting = true;
+        touch_icon_status = 0;
+        touch_icon_hash[0] = 0;
+        SDL_SetAtomicInt(&touch_icon_requested, 1);
+    }
+    pthread_mutex_unlock(&touch_icon_lock);
+    return ready;
+}
+
+int ui_take_touch_icon(char hash[65]) {
+    pthread_mutex_lock(&touch_icon_lock);
+    int status = touch_icon_status;
+    if (hash) SDL_strlcpy(hash, status == 1 ? touch_icon_hash : "", 65);
+    if (status) touch_icon_waiting = false, touch_icon_status = 0;
+    pthread_mutex_unlock(&touch_icon_lock);
+    return status;
+}
+
+static void touch_icon_result(int status, const char *hash) {
+    if (status != -1 && status != -2) {
+        bool valid = status == 1 && hash && strlen(hash) == 64;
+        for (int i = 0; valid && i < 64; ++i)
+            valid = (hash[i] >= '0' && hash[i] <= '9') || (hash[i] >= 'a' && hash[i] <= 'f');
+        if (!valid) status = -2;
+    }
+    pthread_mutex_lock(&touch_icon_lock);
+    if (touch_icon_waiting && !touch_icon_status) {
+        if (status == 1) SDL_strlcpy(touch_icon_hash, hash, sizeof touch_icon_hash);
+        touch_icon_status = status;
+    }
+    pthread_mutex_unlock(&touch_icon_lock);
+}
+
+JNIEXPORT void JNICALL Java_com_mhgu_relink_GameActivity_nativeTouchIconResult(
+        JNIEnv *env, jclass cls, jint status, jstring hash) {
+    (void)cls;
+    const char *text = hash ? (*env)->GetStringUTFChars(env, hash, NULL) : NULL;
+    touch_icon_result(status, text);
+    if (text) (*env)->ReleaseStringUTFChars(env, hash, text);
+}
+
 void ui_request_licenses(void) { SDL_SetAtomicInt(&requested_action, 3); }
 void ui_request_changelog(void) { SDL_SetAtomicInt(&requested_action, 15); }
 void ui_request_game_folder(void) { SDL_SetAtomicInt(&requested_action, 4); }
@@ -60,16 +114,18 @@ void ui_request_share_log(void) { SDL_SetAtomicInt(&requested_action, 6); }
 void ui_request_save_export(void) { SDL_SetAtomicInt(&requested_action, 7); }
 void ui_request_gpu_driver(void) { SDL_SetAtomicInt(&requested_action, 8); }
 void ui_request_import(int kind) { SDL_SetAtomicInt(&requested_action, 9 + kind); }  // (0 cheats, 1 a mod, 2 DLC, 3 the files folder, 4 the app's folder again)
-static void activity_call_language(const char *method) {
+static bool activity_call_language(const char *method) {
     JNIEnv *env = (JNIEnv *)SDL_GetAndroidJNIEnv();
     jobject act = env ? (jobject)SDL_GetAndroidActivity() : NULL;
-    if (!act) return;
+    if (!act) return false;
     jclass cls = (*env)->GetObjectClass(env, act);
     jmethodID m = cls ? (*env)->GetStaticMethodID(env, cls, method, "(I)V") : NULL;
     if (m) (*env)->CallStaticVoidMethod(env, cls, m, (jint)config_language());
+    bool ok = m != NULL && !(*env)->ExceptionCheck(env);
     if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionDescribe(env); (*env)->ExceptionClear(env); }
     if (cls) (*env)->DeleteLocalRef(env, cls);
     (*env)->DeleteLocalRef(env, act);
+    return ok;
 }
 #endif
 #ifdef __ANDROID__
@@ -434,6 +490,8 @@ int ui_run(void) {
         }
         if (action == 1) exit(0);
 #ifdef __ANDROID__
+        if (SDL_SetAtomicInt(&touch_icon_requested, 0) && !activity_call_language("chooseTouchIcon"))
+            touch_icon_result(-2, NULL);
         if (action == 3) activity_call_language("showLicenses");
         if (action == 15) activity_call_language("showChangelog");
         if (action == 4) activity_call_language("showGameFolder");

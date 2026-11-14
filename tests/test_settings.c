@@ -71,7 +71,7 @@ static void auto_r_roundtrip(const char *path) {
         assert(roundtrip.touch_auto_r == !enabled && config_live_touch_auto_r() == !enabled);
         assert(roundtrip.touch_floating && !roundtrip.touch_show[TB_GUARD]);
     }
-    puts("PASS: AutoR defaults Off for new files, honors existing On/Off without migration, and saves/reloads both choices live without changing floating-stick or manual-R visibility");
+    puts("PASS: automatic running (AutoR) defaults Off for new files, honors existing On/Off without migration, and saves/reloads both choices live without changing floating-stick or manual-R visibility");
 }
 static void companion_transaction(const char *path) {
     char companion[1024], staged[1024], backup[1060], error[256];
@@ -348,7 +348,7 @@ int main(int argc, char **argv) {
     assert(!strcmp(settings_text(1, "Language"), "Idioma"));
     assert(!strcmp(settings_text(0, "Language"), "Language"));
     assert(!strcmp(settings_text(2, "Language"), "语言"));
-    assert(!strcmp(settings_text(2, "Full stick automatically holds R"), "拉满摇杆自动按 R"));
+    assert(!strcmp(settings_text(2, "Full stick automatically runs"), "拉满摇杆自动跑步"));
     assert(!strcmp(settings_text(2, "D-pad visibility"), "十字键显示／隐藏"));
     assert(!strcmp(settings_text(1, "Base weapon"), "Arma base"));
     assert(!strcmp(settings_text(2, "Base weapon"), "基础武器"));
@@ -447,8 +447,10 @@ int main(int argc, char **argv) {
     assert(config_help("Server", help, sizeof help) && strstr(help, " and Search Hubs shows") && !strstr(help, "Default"));
     assert(config_help("Key", help, sizeof help) && !strncmp(help, "Matchmaking key:", 16));
     assert(config_help("DrawDistance", help, sizeof help) && strstr(help, "twice as far, 0.5 half") && strstr(help, "\nBetween 0"));
-    assert(config_help("AutoR", help, sizeof help) && strstr(help, "weapon drawn or sheathed") &&
-           strstr(help, "Manual R remains independent") && strstr(help, "Default: Off"));
+    assert(config_help("AutoR", help, sizeof help) && strstr(help, "when the game allows running") &&
+           strstr(help, "Only running is automatic; other R actions are not triggered") &&
+           strstr(help, "R button keeps all native functions and can be used at the same time") &&
+           strstr(help, "Default: Off"));
     assert(!config_help("NoSuchKey", help, sizeof help));
     // A second save must not append duplicate sections or change resolved Auto settings.
     assert(config_save(&loaded, error, sizeof error));

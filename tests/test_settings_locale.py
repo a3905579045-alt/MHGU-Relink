@@ -145,9 +145,9 @@ class SettingsLocaleTest(unittest.TestCase):
         chinese = (ROOT / "runtime/settings_locale_zh.h").read_text(encoding="utf-8")
         labels = {en: zh for en, _, zh in rows(catalog, 3)}
         labels.update(rows(chinese.split("static inline const char *settings_help_zh(", 1)[0], 2))
-        for key in ("Custom touch templates", "Template name", "Button name", "Template %d/20: %s",
+        for key in ("Custom touch templates", "Template name", "Button name", "Template %d/40: %s",
                     "Save current layout to this slot", "Apply selected template",
-                    "Saved template %d/20: %s", "Applied template %d/20: %s",
+                    "Saved template %d/40: %s", "Applied template %d/40: %s",
                     "The universal layout has six combined buttons. A template saves each button's combination, controller binding and name."):
             self.assertIn(key, labels)
             self.assertTrue(has_chinese(labels[key]), key)
@@ -157,6 +157,22 @@ class SettingsLocaleTest(unittest.TestCase):
         self.assertNotIn('"ce.weapon"', source)
         self.assertNotIn('"tp.bind"', source)
         self.assertNotIn('"touch.presets"', source)
+
+    def test_touch_icons_and_template_detail_labels(self):
+        catalog = (ROOT / "runtime/settings_locale.h").read_text(encoding="utf-8")
+        chinese = (ROOT / "runtime/settings_locale_zh.h").read_text(encoding="utf-8")
+        labels = {en: zh for en, _, zh in rows(catalog, 3)}
+        labels.update(rows(chinese.split("static inline const char *settings_help_zh(", 1)[0], 2))
+        for key in ("Touch button icons", "Template details", "Default icon", "Custom image",
+                    "Choose image from device", "Combined button %d", "Sword", "Crosshair",
+                    "Icon saved to the current layout.",
+                    "Could not import this image. The previous icon was kept."):
+            self.assertIn(key, labels)
+            self.assertTrue(has_chinese(labels[key]), key)
+        source = (ROOT / "runtime/settings_panel.cpp").read_text(encoding="utf-8")
+        self.assertIn('push(View::TemplateDetail, "tp.save")', source)
+        self.assertIn('"touch.icons"', source)
+        self.assertIn('touch_layout_generation() == touch_icons.generation', source)
 
     def test_common_r_is_labeled_aim_with_legacy_visibility_key(self):
         catalog = (ROOT / "runtime/settings_locale.h").read_text(encoding="utf-8")
@@ -177,6 +193,12 @@ class SettingsLocaleTest(unittest.TestCase):
         self.assertIn("aim (R)", aim_help[1])
         self.assertIn("apuntar (R)", aim_help[2])
         self.assertIn("瞄准（R）", aim_help[3])
+        self.assertIn("all native R functions", aim_help[1])
+        self.assertIn("at the same time as automatic running", aim_help[1])
+        self.assertIn("todas las funciones originales de R", aim_help[2])
+        self.assertIn("a la vez", aim_help[2])
+        self.assertIn("原生 R 的全部功能", aim_help[3])
+        self.assertIn("与自动跑步同时使用", aim_help[3])
         self.assertNotIn("防御", aim_help[3])
 
     def test_auto_r_switch_and_help(self):
@@ -185,24 +207,68 @@ class SettingsLocaleTest(unittest.TestCase):
         chinese = (ROOT / "runtime/settings_locale_zh.h").read_text(encoding="utf-8")
         labels = {en: zh for en, _, zh in rows(catalog, 3)}
         labels.update(rows(chinese.split("static inline const char *settings_help_zh(", 1)[0], 2))
-        self.assertEqual(labels["Full stick automatically holds R"], "拉满摇杆自动按 R")
+        self.assertEqual(labels["Full stick automatically runs"], "拉满摇杆自动跑步")
         auto_r = source.split('add_bool(r, "touch.auto_r",', 1)[1].split(";", 1)[0]
         self.assertIn('&c.touch_auto_r, ini("AutoR")', auto_r)
         help_key = literals(source.split('add_bool(r, "touch.auto_r",', 1)[1].split('r.back().help = tr(', 1)[1])[0]
-        for phrase in ("fixed or floating", "villages and quests", "weapon drawn or sheathed",
-                       "manual R stays independent", "Default: Off"):
+        for phrase in ("fixed or floating", "when the game allows it", "never triggers other R actions",
+                       "R button keeps all native functions", "at the same time", "Default: Off"):
             self.assertIn(phrase, help_key)
-        for phrase in ("固定或浮动", "村庄和任务", "拔刀、收刀", "手动 R 独立", "默认：关闭"):
+        for phrase in ("固定或浮动", "游戏允许时自动跑步", "不触发 R 的其他动作", "全部功能", "可同时使用", "默认：关闭"):
             self.assertIn(phrase, labels[help_key])
         floating_help = literals(source.split('add_bool(r, "touch.floating",', 1)[1].split('r.back().help = tr(', 1)[1])[0]
         self.assertIn("never the camera", floating_help)
+        self.assertIn("Automatic running", floating_help)
         self.assertIn("separate switch", floating_help)
-        self.assertNotIn("never turns the camera or automatically presses R", source)
+        self.assertNotIn("Full stick automatically holds R", source)
+        self.assertNotIn("weapon drawn or sheathed", help_key)
         self.assertLess(source.index('"touch.floating"'), source.index('"touch.auto_r"'))
         help_rows = dict(rows(chinese.split("static inline const char *settings_help_zh(", 1)[1], 2))
-        self.assertIn("拔刀、收刀", help_rows["AutoR"])
+        self.assertIn("不触发 R 的其他动作", help_rows["AutoR"])
+        self.assertIn("可同时使用", help_rows["AutoR"])
         self.assertIn("默认：关闭", help_rows["AutoR"])
+        self.assertNotIn("拔刀、收刀", help_rows["AutoR"])
         self.assertNotIn("兼容旧配置", help_rows["AutoR"])
+
+    def test_common_ammo_and_item_arrow_help(self):
+        source = (ROOT / "runtime/settings_panel.cpp").read_text(encoding="utf-8")
+        catalog = (ROOT / "runtime/settings_locale.h").read_text(encoding="utf-8")
+        chinese = (ROOT / "runtime/settings_locale_zh.h").read_text(encoding="utf-8")
+        labels = {en: zh for en, _, zh in rows(catalog, 3)}
+        overrides = dict(rows(chinese.split("static inline const char *settings_help_zh(", 1)[0], 2))
+        for translations in (labels, overrides):
+            self.assertEqual(translations["Next ammo"], "下一种弹药")
+            self.assertEqual(translations["Previous ammo"], "上一种弹药")
+        help_key = literals(source.split('action(r, "touch.buttons",', 1)[1].split('r.back().help = tr(', 1)[1])[0]
+        self.assertIn("Item and ammo arrows never turn the camera", help_key)
+        self.assertIn("only during quests with a bow or bowgun", help_key)
+        for translations in (labels, overrides):
+            for phrase in ("道具箭头和弹药箭头", "滑动不转视角", "仅任务内弓／弩可用", "六个组合键"):
+                self.assertIn(phrase, translations[help_key])
+        # Only the six original combo slots receive numbered titles; appended ammo icons use their own labels.
+        title = source.split("std::string touch_icon_button_title(int button) {", 1)[1].split("\n}", 1)[0]
+        self.assertIn("button >= 16 && button < 16 + TOUCH_COMBOS", title)
+        self.assertIn("tr(touch_icon_button_name(button))", title)
+        button_rows = source.split("void touch_button_rows(std::vector<Row> &r) {", 1)[1].split("\n}", 1)[0]
+        self.assertIn("i >= TB_RANGED && i < TB_AMMO", button_rows)
+        phone_table = source.split("const PhoneHelp PHONE_HELP[] = {", 1)[1].split("\n};", 1)[0]
+        phone = {row[0]: row[1:] for row in rows(phone_table, 4)}
+        ammo = phone["ShowAmmo"]
+        for phrase in ("Independent", "universal layout", "only during quests with a bow or bowgun",
+                       "never turns the camera", "Move and resize"):
+            self.assertIn(phrase, ammo[0])
+        for phrase in ("independientes", "solo en misiones", "nunca gira la cámara"):
+            self.assertIn(phrase, ammo[1])
+        help_rows = dict(rows(chinese.split("static inline const char *settings_help_zh(", 1)[1], 2))
+        for text in (ammo[2], help_rows["ShowAmmo"]):
+            for phrase in ("通用布局", "独立", "仅任务内使用弓或弩炮", "滑动不转视角", "移动、缩放"):
+                self.assertIn(phrase, text)
+        self.assertIn("默认：开启", help_rows["ShowAmmo"])
+        self.assertIn("never turns the camera", phone["ShowItemArrows"][0])
+        self.assertIn("nunca gira la cámara", phone["ShowItemArrows"][1])
+        for text in (phone["ShowItemArrows"][2], help_rows["ShowItemArrows"]):
+            self.assertIn("滑动不转视角", text)
+            self.assertIn("道具栏上滑动仍可切换道具", text)
 
     def test_chinese_help_coverage(self):
         source = (ROOT / "runtime/settings_panel.cpp").read_text(encoding="utf-8")

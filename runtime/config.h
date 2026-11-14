@@ -155,7 +155,7 @@ typedef struct {
     int fill_screen;          // [Display] FillScreen: movies and menu backdrops cover a wider screen (nvn/vulkan/exec.c)
     int touch_controls;       // [Touch] Controls: TOUCH_*, the controls on the screen (runtime/touch.cpp)
     int touch_hud;            // [Touch] MoveHUD: the HUD moves out of the thumbs' way while they show (nvn/vulkan/exec.c)
-    int touch_auto_r;         // [Touch] AutoR: full movement-stick travel holds R, drawn or sheathed; default Off
+    int touch_auto_r;         // [Touch] AutoR: full movement-stick travel requests running only; default Off
     int touch_floating;       // [Touch] FloatingStick: start the left stick at the finger's landing point
     float touch_camera;       // [Touch] CameraSpeed: the camera's turn for a drag (1: about 90 degrees a screen height)
     float touch_opacity;      // [Touch] Opacity: of the controls, 0.2 .. 1

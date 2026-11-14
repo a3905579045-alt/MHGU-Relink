@@ -326,7 +326,7 @@ $(O)/rt/overlay.o: runtime/overlay.cpp runtime/overlay.h runtime/forge.h
 	@mkdir -p $(dir $@)
 	$(CXX) $(IMGUIFLAGS) $(if $(filter 1,$(NULL_GPU)),-DMHGU_NULL_BACKEND) -Wall -Iruntime -c $< -o $@
 
-$(O)/rt/touch.o: runtime/touch.cpp runtime/touch.h runtime/config.h runtime/hle/input.h
+$(O)/rt/touch.o: runtime/touch.cpp runtime/touch.h runtime/config.h runtime/hle/input.h updater/updater.h
 	@mkdir -p $(dir $@)
 	$(CXX) $(IMGUIFLAGS) -Wall -Iruntime -c $< -o $@
 

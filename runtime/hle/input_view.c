@@ -5,7 +5,8 @@
 // gameplay view: the Player copy, the town avatar, the camera) and f_5de4f8 for mb2 (the ~320 menu readers), and
 // derives cur / prev / trig / rel from what comes back. Both are pure functions of r1, so they are hooked: r1 becomes
 // act_view(), the original runs, and the engine's own edge logic sees the rebound word (chords and combos come out
-// right for free). The hooks are installed only with [Actions] Enable=1.
+// right for free). Rebinding hooks are installed with [Actions] Enable=1; the pad snapshot and R-role hooks also
+// carry the independent touch-stick run request when rebinding is off.
 //
 // The actions come from the host (runtime/hle/input.c): the set active when the game polled the pad this frame.
 // The context (field / town / menu) and the weapon class come from the engine's own code running: the player's
@@ -39,6 +40,7 @@
                                   // are read from the MENU word's pressed bits (sPad+0x6bfc), not the gameplay word's
 #define FN_PL_IS_LOCAL 0x47bcd0u  // (player) 1: ours
 #define FN_KC_R        0x85f93cu  // () the R-role mask the game tests: R (mb1 0x40), or ZR (0x800) with the second Control Type
+#define FN_PL_EVENT    0x485de4u  // (player, event) ORs the native control event into player+0x1414
 #define FN_PAD_INDEX   0xdad28cu  // (sPad) the index of the pad slot in use
 #define G_SPAD         0x1a3cbfcu // GOT entry: **sPad
 #define G_OPTIONS      0x1a97f78u // options object *
@@ -88,7 +90,7 @@ static uint32_t g_kc_seen[256];
 static int g_kc_n;
 static bool g_on;      // the layer is on this frame ([Actions] Enable; the settings menu can turn it on and off)
 static volatile uint64_t g_hunt_menu_ns;  // when that handler last ran (0: not in this hunt yet)
-static bool g_hooked;  // the hooks are in (from the first time it was on)
+static bool g_core_hooked, g_hooked;  // pad snapshot / run, and the optional rebinding hooks
 
 static bool sane(uint32_t a) { return a >= 0x08000000u && a < 0xF0000000u && !(a & 3); }
 
@@ -168,17 +170,15 @@ static void mb_update(Cpu *c) {
         const ActProfile *p = act_profile();
         g_on = act_enabled(), g_menus = p->menus, g_log = p->log, g_pointer = p->pointer;
         g_split = act_split();
-    }
-    if (!g_on) {  // (turned off in the settings menu: the game reads the pad as it is)
-        fnhook_call_next(c, FN_MB_UPDATE);
-        return;
-    }
-    if (first) {
         g_frame++;
         input_act_latch(&g_snap);
         if (g_var && g_frame - g_var_frame > 3) g_var = 0, g_weapon_pub = -1;  // (no hunter for a while)
         uint32_t opt = LD32(G_OPTIONS);
         g_dash_zr = sane(opt) && LD8(opt + OPT_DASH_ROLE) != 0;
+    }
+    if (!g_on) {  // (rebinding is off; the independent run request was still latched with this pad frame)
+        fnhook_call_next(c, FN_MB_UPDATE);
+        return;
     }
     if (g_pointer && sp && g_snap.ptr_valid) {
         uint32_t idx = call(c, FN_PAD_INDEX, sp, 0, 0);
@@ -294,6 +294,15 @@ static bool kcr_weapon_caller(uint32_t lr) {
 static void kc_r(Cpu *c) {
     uint32_t lr = c->r[14];
     fnhook_call_next(c, FN_KC_R);
+    // Only these held-R sites request running. A synthetic pad bit also reaches weapon-specific consumers.
+    uint32_t site = lr & ~1u;
+    if (g_snap.touch_run && (site == 0x47cd3cu || site == 0x48d358u)) {
+        uint32_t pl = c->r[4];
+        if (sane(pl) && call(c, FN_PL_IS_LOCAL, pl, 0, 0) == 1) {
+            call(c, FN_PL_EVENT, pl, 0, 0);
+            if (site == 0x47cd3cu) call(c, FN_PL_EVENT, pl, 31, 0);
+        }
+    }
     if (g_kclog) {
         bool seen = false;
         for (int i = 0; i < g_kc_n; i++) seen |= g_kc_seen[i] == lr;
@@ -317,9 +326,14 @@ void input_view_init(void) {
     input_view_apply();
 }
 
-// Hooks the game the first time the layer is on: at startup with [Actions] Enable=1, or when the settings menu turns it
-// on (game thread, as Forge's plugins hook while the game runs). Turned off later, the hooks stay and pass through.
+// The touch-run channel needs the pad snapshot and R-role hooks even with action rebinding disabled. Other hooks
+// are added the first time rebinding is enabled; turning it off later makes them pass through.
 void input_view_apply(void) {
+    if (!g_core_hooked) {
+        fnhook_set_outer(FN_MB_UPDATE, hle_register("inputview:mb_update", mb_update));
+        fnhook_set_outer(FN_KC_R, hle_register("inputview:kc_r", kc_r));
+        g_core_hooked = true;
+    }
     if (!act_enabled() || g_hooked) return;
     const ActProfile *p = act_profile();
     g_log = p->log, g_menus = p->menus, g_pointer = p->pointer;
@@ -327,7 +341,6 @@ void input_view_apply(void) {
     // The layer is an outer hook (fnhook_set_outer): it runs first whenever a mod hooks the same function, before or after
     // it, so a mod's hook is given the rebound word (a mod that reads the buttons follows the player's bindings with no
     // work of its own) and the bits a mod adds on the way are not stripped again.
-    fnhook_set_outer(FN_MB_UPDATE, hle_register("inputview:mb_update", mb_update));
     fnhook_set_outer(FN_TR_MB1, hle_register("inputview:tr_mb1", tr_mb1));
     fnhook_set_outer(FN_TR_MB2, hle_register("inputview:tr_mb2", tr_mb2));
     fnhook_set_outer(FN_PLAYER, hle_register("inputview:player", player_update));
@@ -338,7 +351,6 @@ void input_view_apply(void) {
         fnhook_set_outer(mappers[i], hle_register(name, mapper_fn[i]));
     }
     fnhook_set_outer(FN_TOWN_PAD, hle_register("inputview:town_pad", town_pad));
-    fnhook_set_outer(FN_KC_R, hle_register("inputview:kc_r", kc_r));
     g_hooked = true;
     LOG("[actions] translators hooked\n");
 }
