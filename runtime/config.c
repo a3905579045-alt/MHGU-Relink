@@ -120,7 +120,7 @@
     /* [Touch] */                                                                                   \
     .touch_controls = TOUCH_AUTO,                                                                   \
     .touch_hud = 1,                                                                                 \
-    .touch_auto_r = 1,                                                                              \
+    .touch_auto_r = 0,                                                                              \
     .touch_floating = 0,                                                                            \
     .touch_camera = 1.0f,                                                                           \
     .touch_opacity = 0.8f,                                                                          \
@@ -529,10 +529,11 @@ static const char DEFAULT_INI[] =
     "; Default: On\n"
     "MoveHUD = On\n"
     "\n"
-    "; Legacy option retained for compatibility; the universal layout's stick only moves the hunter\n"
-    "; The universal layout never presses R automatically or turns the camera from the movement stick\n"
-    "; Default: On\n"
-    "AutoR = On\n"
+    "; Hold R at full movement-stick travel in villages and quests, with the weapon drawn or sheathed\n"
+    "; Works with fixed or floating sticks; moving inward or releasing stops only automatic R\n"
+    "; Manual R remains independent; no automatic R in menus, settings, the layout editor or while controls are hidden\n"
+    "; Default: Off\n"
+    "AutoR = Off\n"
     "\n"
     "; Start the left stick where your finger lands; Off keeps the layout's fixed position\n"
     "; Default: Off\n"

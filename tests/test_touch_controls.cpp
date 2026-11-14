@@ -200,7 +200,7 @@ static void fresh(int w = 1280, int h = 720) {
     touch_reset(); g_s = {}; g_s.loaded = true; g_s.layout = defaults(COMMON_BASE); g_s.saved = g_s.layout; g_s.layout_profile=UNIVERSAL_LAYOUT;
     profile = TOUCH_UNIVERSAL_PROFILE; weapon_override = -1; in_quest = true; g_s.in_quest = true; g_s.detected_weapon = 0;
     g_s.touched = true; g_s.w = (float)w; g_s.h = (float)h; g_s.sel = -1;
-    cfg = {}; cfg.touch_controls = TOUCH_ON; cfg.touch_auto_r = 1;
+    cfg = {}; cfg.touch_controls = TOUCH_ON; cfg.touch_auto_r = 0;
     const int shown[] = TOUCH_SHOW_DEFAULT; std::copy(shown, shown + TB_COUNT, cfg.touch_show);
     settings_open = false; config_save_fail=companion_commit_fail=false; config_saves=0; drawn = 0; ranged = 0; bow_type = 0; aiming = lock_on = persistent_lock_on = false; hunt_camera = true;
     local_hunter=0; bow_drag={};
@@ -306,16 +306,35 @@ static void item_gestures() {
     puts("PASS: continuous item, Bowgun ammo and Bow coating slides reverse under the same finger; town does not switch ammo/coatings; long hold opens L and short tap uses Y");
 }
 static void auto_r() {
-    for(int flag=0;flag<2;++flag) for(bool menu:{false,true}) {
-        fresh(); cfg.touch_auto_r=flag; game_menu_state(menu);
-        at(SDL_EVENT_FINGER_DOWN,C_STICK); at(SDL_EVENT_FINGER_MOTION,C_STICK,1,2,0);
-        Input v=update(); assert(v.lx>30000 && !v.b && !v.rx && !v.ry && !v.dx && !v.dy && !g_s.run);
-        at(SDL_EVENT_FINGER_DOWN,C_R,2); assert(update().b==B(BTN_R));
-        at(SDL_EVENT_FINGER_CANCELED,C_R,2); assert(!update().b && update(B(BTN_R),true).b==B(BTN_R));
-        drawn=1; assert(!update().b && update().lx>30000);
-        at(SDL_EVENT_FINGER_CANCELED,C_STICK); assert(!update().lx);
+    for(const ImVec2 size:{ImVec2(640,360),ImVec2(1280,720),ImVec2(2520,1080),ImVec2(3840,1080)})
+    for(int floating:{0,1}) for(bool quest:{false,true}) for(int out:{0,1}) for(int flag:{0,1}) {
+        fresh((int)size.x,(int)size.y); assert(!cfg.touch_auto_r);
+        cfg.touch_auto_r=flag; cfg.touch_floating=floating; in_quest=quest; drawn=out; update();
+        const Geo g=place(g_s.layout,C_STICK,(float)screen_w,(float)screen_h);
+        const ImVec2 origin=floating?ImVec2(screen_w*.35f,screen_h*.75f):g.c;
+        event(SDL_EVENT_FINGER_DOWN,1,origin.x,origin.y); assert(finger(g_s,1)->kind==F_STICK);
+        auto check=[&](Input v,bool full) {
+            const uint64_t expected=flag&&full?B(BTN_R):0;
+            assert(v.b==expected && v.touch_b==expected && g_s.run==(expected!=0));
+            assert(!v.rx && !v.ry && !v.dx && !v.dy);
+        };
+        auto move=[&](float x,float y,bool full) {
+            event(SDL_EVENT_FINGER_MOTION,1,origin.x+x*g.r,origin.y+y*g.r);
+            check(update(),full);
+        };
+        check(update(),false);
+        move(.97f,0,false); move(.9801f,0,true); assert(update().lx>32000);
+        move(.951f,0,true); move(.949f,0,false); move(.97f,0,false);
+        move(.99f,0,true); drawn=1-out; check(update(),true);
+        move(2,0,true); move(.25f,0,false); assert(abs(update().lx-8191)<250);
+        move(.7f,.7f,true); move(.67f,.67f,false);
+        move(.99f,0,true); event(SDL_EVENT_FINGER_UP,1,origin.x+g.r,origin.y);
+        check(update(),false); assert(!update().lx && !update().ly);
+        event(SDL_EVENT_FINGER_DOWN,2,origin.x,origin.y);
+        event(SDL_EVENT_FINGER_MOTION,2,origin.x+.97f*g.r,origin.y); check(update(),false);
+        event(SDL_EVENT_FINGER_CANCELED,2,origin.x+g.r,origin.y); check(update(),false);
     }
-    puts("PASS: unified profile19 left movement never synthesizes R with AutoR on/off in hunts/menus; explicit touch/controller R remains independent");
+    puts("PASS: optional AutoR defaults off in the fixture; fixed/floating common sticks at four sizes send native R at 0.98 radius and release below 0.95 in town/quest with drawn/sheathed weapons; radial hysteresis is per touch and movement remains linear without camera output");
 }
 
 static void floating_stick() {
@@ -340,7 +359,7 @@ static void floating_stick() {
     game_menu_state(true);event(SDL_EVENT_FINGER_DOWN,6,x,y);
     event(SDL_EVENT_FINGER_MOTION,6,x,y-g.r);assert(update().ly>30000 && !(update().b&DPAD_UP));
     event(SDL_EVENT_FINGER_CANCELED,6,x,y-g.r);assert(update().ly==0);
-    puts("PASS: common fixed/floating stick origin, neutral landing, broader floating area, item priority and menu movement keep profile19 no-AutoR behavior");
+    puts("PASS: with AutoR off, common fixed/floating stick origin, neutral landing, broader floating area, item priority and menu movement keep linear movement without synthesized R");
 }
 static std::vector<ImVec2> touch_geometry() {
     ImGuiIO &io = ImGui::GetIO(); io.DisplaySize = ImVec2((float)screen_w, (float)screen_h); io.DeltaTime = 1.0f/60;
@@ -1727,6 +1746,73 @@ static void template_corrupt_input() {
     write_text("touch_template_01.txt",good); assert(touch_template_use(0));
     puts("PASS: empty, truncated, missing-field and invalid version/name/geometry/mask/pad templates fail closed without changing active layout/config or rewriting the bad input");
 }
+static void auto_r_sources_and_ownership() {
+    for(int floating:{0,1}) {
+        fresh(); cfg.touch_auto_r=1; cfg.touch_floating=floating; update();
+        const Geo g=place(g_s.layout,C_STICK,(float)screen_w,(float)screen_h);
+        const ImVec2 origin=floating?ImVec2(screen_w*.35f,screen_h*.75f):g.c;
+        auto down=[&]() { event(SDL_EVENT_FINGER_DOWN,1,origin.x,origin.y); };
+        auto move=[&](float radius) { event(SDL_EVENT_FINGER_MOTION,1,origin.x+radius*g.r,origin.y); };
+        auto cancel=[&]() { event(SDL_EVENT_FINGER_CANCELED,1,origin.x,origin.y); };
+        auto expect=[&](uint64_t touch,uint64_t physical=0) {
+            const Input v=update(physical,physical!=0);
+            assert(v.touch_b==touch && v.b==(touch|physical)); no_stick_camera(v);
+        };
+        down(); at(SDL_EVENT_FINGER_DOWN,C_R,2); move(.99f); expect(B(BTN_R));
+        move(.4f); expect(B(BTN_R)); assert(!g_s.run); cancel(); expect(B(BTN_R));
+        at(SDL_EVENT_FINGER_CANCELED,C_R,2); expect(0);
+        strcpy(cfg.touch_weapon_combo[TOUCH_UNIVERSAL_PROFILE][0],"L+R");
+        down(); move(.99f); at(SDL_EVENT_FINGER_DOWN,C_COMBO,3); expect(B(BTN_L)|B(BTN_R));
+        move(.4f); expect(B(BTN_L)|B(BTN_R)); assert(!g_s.run);
+        at(SDL_EVENT_FINGER_CANCELED,C_COMBO,3); expect(0); cancel(); expect(0);
+        down(); move(.99f); expect(B(BTN_R),B(BTN_R));
+        cfg.touch_auto_r=0; expect(0,B(BTN_R)); assert(!g_s.run);
+        cfg.touch_auto_r=1; expect(B(BTN_R),B(BTN_R));
+        move(.4f); expect(0,B(BTN_R)); cancel(); expect(0,B(BTN_R)); assert(!g_s.run);
+        down(); move(.5f); expect(0);
+        event(SDL_EVENT_FINGER_DOWN,2,origin.x+g.r*.25f,origin.y);
+        const Finger *extra=finger(g_s,2); assert(!extra || (extra->kind!=F_STICK && extra->kind!=F_CAMERA));
+        event(SDL_EVENT_FINGER_MOTION,2,origin.x+g.r*2,origin.y); expect(0); assert(!g_s.run);
+        move(.99f); expect(B(BTN_R)); cancel(); expect(0);
+        event(SDL_EVENT_FINGER_MOTION,2,origin.x+g.r*3,origin.y); expect(0); assert(!g_s.run);
+        event(SDL_EVENT_FINGER_UP,2,origin.x+g.r*3,origin.y); expect(0);
+    }
+    puts("PASS: AutoR releases only its own contribution; held manual touch R, L+R combos and physical R stay independent; live Off/On updates work, and secondary stick touches cannot activate R or inherit ownership");
+}
+static void auto_r_lifecycle() {
+    for(int floating:{0,1}) for(int mode=0;mode<10;++mode) {
+        fresh(); cfg.touch_auto_r=1; cfg.touch_floating=floating; update();
+        if(mode==8) assert(touch_template_save(19,"AutoR lifecycle"));
+        const Geo g=place(g_s.layout,C_STICK,(float)screen_w,(float)screen_h);
+        const ImVec2 origin=floating?ImVec2(screen_w*.35f,screen_h*.75f):g.c;
+        event(SDL_EVENT_FINGER_DOWN,1,origin.x,origin.y);
+        event(SDL_EVENT_FINGER_MOTION,1,origin.x+g.r*.99f,origin.y);
+        Input v=update(B(BTN_R),true); assert(g_s.run && v.touch_b==B(BTN_R)); no_stick_camera(v);
+        switch(mode) {
+            case 0: game_menu_state(true); break;
+            case 1: settings_open=true; break;
+            case 2: touch_edit_begin(); break;
+            case 3: cfg.touch_controls=TOUCH_OFF; break;
+            case 4: cfg.touch_show[TB_STICK]=0; break;
+            case 5: break; // typing is passed to update below
+            case 6: touch_reset(); break;
+            case 7: in_quest=false; break;
+            case 8: assert(touch_template_use(19)); break;
+            case 9: cfg.touch_controls=TOUCH_AUTO; break;
+        }
+        auto stopped=[&]() {
+            const Input input=update(B(BTN_R),true,mode==5);
+            if(g_s.run || (input.touch_b&B(BTN_R))) fprintf(stderr,"AUTOR LIFECYCLE FAILURE: floating=%d mode=%d run=%d touch=%llu\n",floating,mode,g_s.run,(unsigned long long)input.touch_b);
+            assert(!g_s.run && !(input.touch_b&B(BTN_R)) && input.b==B(BTN_R)); no_stick_camera(input);
+        };
+        stopped(); event(SDL_EVENT_FINGER_UP,1,screen_w+10000.f,-10000.f); stopped();
+        if(mode==0) game_menu_state(false);
+        settings_open=false; cfg.touch_controls=TOUCH_ON; cfg.touch_show[TB_STICK]=1;
+        if(g_s.edit) { editor_click(E_CANCEL); update(); }
+        v=update(B(BTN_R),true); assert(!g_s.run && !v.touch_b && v.b==B(BTN_R)); no_stick_camera(v);
+    }
+    puts("PASS: fixed/floating AutoR clears in game menus, overlays, editor, Off, hidden stick, typing, reset, scene/template changes and Auto controller hiding; old UP/return cannot revive touch R and physical R stays intact");
+}
 static void preview(const char *path) {
     SDL_Surface *surface=SDL_CreateSurface(screen_w,screen_h,SDL_PIXELFORMAT_RGBA32);assert(surface);
     SDL_Renderer *renderer=SDL_CreateSoftwareRenderer(surface);assert(renderer);
@@ -1788,7 +1874,7 @@ int main(int argc,char **argv) {
     common_startup_and_legacy(); ranged_guard_migration(); common_r_aim_identity(); common_controls_and_names();
     touch_button_sources(); item_gestures(); auto_r(); floating_stick();
     dpad_visibility(1280,720); dpad_visibility(640,360); layout_roundtrip(); show_settings();
-    common_editor_and_failure(); template_roundtrip_and_failure(); template_corrupt_input();
+    common_editor_and_failure(); template_roundtrip_and_failure(); template_corrupt_input(); auto_r_sources_and_ownership(); auto_r_lifecycle();
     quest_dpad_camera(); universal_floating_stick(); universal_floating_boundaries(); universal_floating_priority_and_reset();
     common_floating_editor_roundtrip(); ordinary_button_drag(); button_drag_release_and_multitouch(); button_drag_lifecycle(); button_drag_exclusions();
     bow_charge_drag(); bow_drag_sources(); bow_drag_lifecycle(); bow_drag_manual_aim();
@@ -1813,6 +1899,16 @@ int main(int argc,char **argv) {
     preview("touch-common-floating-active-1280x720.png"); event(SDL_EVENT_FINGER_CANCELED,1,488,493); update();
     cfg.touch_floating=0; update(); preview("touch-common-fixed-1280x720.png");
     cfg.touch_floating=1; touch_edit_begin(); update(); preview("touch-common-floating-editor-1280x720.png"); editor_click(E_CANCEL); update();
+    for(int floating:{0,1}) for(int enabled:{0,1}) {
+        fresh(); cfg.language=2; cfg.touch_floating=floating; cfg.touch_auto_r=enabled; update();
+        const Geo g=place(g_s.layout,C_STICK,(float)screen_w,(float)screen_h);
+        const ImVec2 origin=floating?ImVec2(screen_w*.35f,screen_h*.75f):g.c;
+        event(SDL_EVENT_FINGER_DOWN,1,origin.x,origin.y);
+        event(SDL_EVENT_FINGER_MOTION,1,origin.x+g.r,origin.y); const Input v=update();
+        assert(g_s.run==(enabled!=0) && v.touch_b==(enabled?B(BTN_R):0));
+        char path[100]; snprintf(path,sizeof path,"touch-auto-r-%s-%s-1280x720.png",floating?"floating":"fixed",enabled?"on":"off");
+        preview(path); event(SDL_EVENT_FINGER_CANCELED,1,origin.x+g.r,origin.y); update();
+    }
     SDL_DestroyWindow(window); SDL_Quit();
     puts("PASS: all common layout/template and retained touch control regressions (host stubs, no APK/game execution)"); return 0;
 }

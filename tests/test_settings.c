@@ -34,6 +34,45 @@ static void file_equals(const char *path, const char *expected) {
     assert(!strcmp(actual, expected));
     free(actual);
 }
+static void auto_r_roundtrip(const char *path) {
+    char error[256];
+    remove(path);
+    g_config = config_defaults(); config_load();
+    assert(!config_editable().touch_auto_r && !config_live_touch_auto_r());
+    char *text = read_file(path);
+    assert(strstr(text, "AutoR = Off"));
+    free(text);
+    for (int enabled = 0; enabled < 2; enabled++) {
+        char legacy[256];
+        snprintf(legacy, sizeof legacy,
+                 "; Existing user configuration\n[Touch]\nAutoR = %s ; keep my choice\n"
+                 "FloatingStick = On\nShowGuard = Off\n", enabled ? "On" : "Off");
+        write_file(path, legacy);
+        g_config = config_defaults(); config_load();
+        Config loaded = config_editable();
+        assert(loaded.touch_auto_r == enabled && config_live_touch_auto_r() == enabled);
+        assert(loaded.touch_floating && !loaded.touch_show[TB_GUARD]);
+        text = read_file(path);
+        assert(strstr(text, legacy)); // Loading may append missing sections but must not migrate AutoR.
+        free(text);
+        loaded.volume = 37;
+        assert(config_save(&loaded, error, sizeof error)); // An unrelated Save preserves the explicit choice.
+        g_config = config_defaults(); config_load();
+        assert(config_editable().touch_auto_r == enabled && config_live_touch_auto_r() == enabled);
+        Config edited = config_editable();
+        edited.touch_auto_r = !enabled;
+        assert(config_save(&edited, error, sizeof error) && config_live_touch_auto_r() == !enabled);
+        assert(!config_restart_required(&edited) && !config_restart_key("AutoR"));
+        text = read_file(path);
+        assert(strstr(text, enabled ? "AutoR = Off" : "AutoR = On"));
+        free(text);
+        g_config = config_defaults(); config_load();
+        Config roundtrip = config_editable();
+        assert(roundtrip.touch_auto_r == !enabled && config_live_touch_auto_r() == !enabled);
+        assert(roundtrip.touch_floating && !roundtrip.touch_show[TB_GUARD]);
+    }
+    puts("PASS: AutoR defaults Off for new files, honors existing On/Off without migration, and saves/reloads both choices live without changing floating-stick or manual-R visibility");
+}
 static void companion_transaction(const char *path) {
     char companion[1024], staged[1024], backup[1060], error[256];
     snprintf(companion, sizeof companion, "%s.layout", path);
@@ -241,6 +280,7 @@ static void combo_text_bounds(void) {
 }
 int main(int argc, char **argv) {
     assert(argc == 2);
+    assert(!config_live_touch_auto_r()); // Before the first load the live default must also be Off.
     const char *path = argv[1];
     FILE *f = fopen(path, "wb"); assert(f);
     fputs("; Keep this comment\r\n[Display]\r\nMode = Borderless Window\r\nResolution = Desktop\r\nRenderResolution = Auto\r\n"
@@ -262,7 +302,7 @@ int main(int argc, char **argv) {
     assert(c.hp.quests == 2 && c.language == 0 && c.button_icons == 0);
     assert(!c.draw_grass && !config_grass_draw());
     assert(c.motion_mode == MOTION_OFF && config_motion_mode() == MOTION_OFF);
-    assert(c.touch_auto_r == 1 && config_live_touch_auto_r() == 1);
+    assert(c.touch_auto_r == 0 && config_live_touch_auto_r() == 0);
     assert(c.touch_floating == 0 && config_live_touch_floating() == 0);
     assert(!c.persistent_lock_on && !config_live_persistent_lock_on());
     assert(!config_restart_required(&c)); // Raw Auto/Desktop survives environment resolution.
@@ -407,7 +447,8 @@ int main(int argc, char **argv) {
     assert(config_help("Server", help, sizeof help) && strstr(help, " and Search Hubs shows") && !strstr(help, "Default"));
     assert(config_help("Key", help, sizeof help) && !strncmp(help, "Matchmaking key:", 16));
     assert(config_help("DrawDistance", help, sizeof help) && strstr(help, "twice as far, 0.5 half") && strstr(help, "\nBetween 0"));
-    assert(config_help("AutoR", help, sizeof help) && strstr(help, "never presses R automatically") && strstr(help, "Default: On"));
+    assert(config_help("AutoR", help, sizeof help) && strstr(help, "weapon drawn or sheathed") &&
+           strstr(help, "Manual R remains independent") && strstr(help, "Default: Off"));
     assert(!config_help("NoSuchKey", help, sizeof help));
     // A second save must not append duplicate sections or change resolved Auto settings.
     assert(config_save(&loaded, error, sizeof error));
@@ -437,7 +478,7 @@ int main(int argc, char **argv) {
     assert(config_defaults().mute_in_background==0);
     assert(config_defaults().combo_window==COMBO_LENIENT);
     assert(config_defaults().fxaa_mode==FXAA_ORIGINAL);
-    assert(config_defaults().touch_auto_r==1);
+    assert(config_defaults().touch_auto_r==0);
     assert(config_defaults().touch_floating==0);
     assert(config_defaults().voice_mode==VOICE_OFF && config_defaults().mic_volume==100);
     assert(config_defaults().voice_volume==70 && !config_defaults().noise_suppression);
@@ -593,6 +634,7 @@ int main(int argc, char **argv) {
     universal_combo_roundtrip(path);
     companion_transaction(path);
     combo_text_bounds();
+    auto_r_roundtrip(path);
     remove(path);
     puts("PASS: INI round trip, Auto/Desktop, environment overrides, comments/unknown keys, duplicate aliases, quest removal, invalid input, atomic write failure, live volume and English/Spanish/Chinese, icons, hot settings, keybinds and restart classification.");
     return 0;

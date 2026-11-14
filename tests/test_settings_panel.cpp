@@ -553,6 +553,83 @@ static void touch_button_rows_regression() {
     }
     puts("PASS: common touch-button rows retain Aim (R) and native item arrows, omit retired ranged-only controls, and save the R visibility toggle through legacy ShowGuard without changing other settings");
 }
+static void auto_r_regression() {
+    char error[256];
+    Config fixture = config_editable();
+    fixture.touch_auto_r = config_defaults().touch_auto_r;
+    fixture.touch_floating = 1;
+    fixture.touch_show[TB_GUARD] = 0;
+    assert(!fixture.touch_auto_r);
+    assert(config_save(&fixture, error, sizeof error));
+    auto saved_choice = [&](int enabled) {
+        const Config saved = config_editable();
+        assert(saved.touch_auto_r == enabled && config_live_touch_auto_r() == enabled);
+        assert(saved.touch_floating == fixture.touch_floating);
+        assert(!memcmp(saved.touch_show, fixture.touch_show, sizeof saved.touch_show));
+        assert(!memcmp(saved.binds, fixture.binds, sizeof saved.binds));
+        std::ifstream in("obj/settings-test/panel-settings.ini", std::ios::binary);
+        const std::string ini((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        assert(ini.find(enabled ? "AutoR = On" : "AutoR = Off") != std::string::npos);
+    };
+    opened = true;
+    idle();
+    seek_row("touch.floating");
+    down();
+    assert(focused_row("touch.auto_r"));
+    assert(!settings_panel_dirty());
+    confirm();
+    assert(settings_panel_dirty());
+    saved_choice(0); // The toggle edits the draft; only Save publishes it to live input.
+    seek_row("save");
+    confirm();
+    assert(!settings_panel_dirty());
+    saved_choice(1);
+
+    seek_row("touch.auto_r");
+    confirm();
+    assert(settings_panel_dirty());
+    back();
+    assert(settings_panel_confirming() && focused_row("dialog.cancel"));
+    confirm();
+    assert(opened && !settings_panel_confirming() && settings_panel_dirty());
+    saved_choice(1);
+    back();
+    seek_row("dialog.discard");
+    confirm();
+    assert(!opened && !settings_panel_dirty());
+    saved_choice(1);
+    frame();
+    opened = true;
+    idle();
+    seek_row("touch.auto_r");
+    confirm();
+    seek_row("save");
+    confirm();
+    assert(!settings_panel_dirty());
+    saved_choice(0);
+
+    // Reset Controls restores Off in the draft and publishes it only when saved.
+    const Config before_reset = config_editable();
+    seek_row("touch.auto_r");
+    confirm();
+    seek_row("save");
+    confirm();
+    saved_choice(1);
+    seek_row("reset");
+    confirm();
+    seek_row("dialog.reset");
+    confirm();
+    assert(settings_panel_dirty() && config_live_touch_auto_r());
+    seek_row("save");
+    confirm();
+    assert(!settings_panel_dirty());
+    assert(!config_editable().touch_auto_r && !config_live_touch_auto_r());
+    opened = false;
+    frame();
+    assert(config_save(&before_reset, error, sizeof error)); // Retain prior combo fixtures for the previews.
+    saved_choice(0);
+    puts("PASS: AutoR switch follows Floating left stick; draft, Save, Cancel, Discard, persisted On/Off and Reset Controls work without changing manual R or floating-stick choices");
+}
 // Capture the actual phone-style settings draw lists on the host, not a mockup or an Android/game screenshot.
 static void template_previews() {
     assert(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS));
@@ -638,6 +715,8 @@ static void template_previews() {
     seek_row("tp.use");
     capture("settings-template-name-zh-640x360.png");
     back();
+    seek_row("touch.auto_r");
+    capture("settings-stick-auto-r-off-zh-640x360.png");
     seek_row("touch.buttons");
     confirm();
     seek_row(("tb." + std::to_string(TB_GUARD)).c_str());
@@ -713,6 +792,7 @@ int main(int argc, char **argv) {
         template_regression();
         combo_layout_regression();
         touch_button_rows_regression();
+        auto_r_regression();
         template_previews();
         ImGui::DestroyContext();
         remove("obj/settings-test/panel-settings.ini");

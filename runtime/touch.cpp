@@ -2,6 +2,7 @@
 // button letter on a small badge.
 //   - left thumb: floating mode hides the idle stick and places it at the initial touch; fixed mode uses the saved
 //     layout position. The knob follows the thumb inside the rim; a light tilt walks, a full one runs
+//     AutoR optionally holds the native R button at full tilt; it never sends camera input
 //   - one common layout in town, quests and every weapon: A / X attack buttons, R aim, B dodge,
 //     Y sheathe, optional shoulders and six named combo buttons; no layout-cycle control
 //   - while a menu of the game's is open (the pause menu, the item pouch, a shop, a yes / no: its windows are drawn
@@ -1141,7 +1142,7 @@ void edit_begin(State &s) {
     s.save_failed = false;
     s.saved = s.layout;
     for (Finger &f : s.f) f.kind = F_NONE;
-    s.stick_on = false, s.held = 0;
+    s.stick_on = false, s.run = false, s.held = 0;
     fprintf(stderr, "[touch] layout editor\n");
 }
 void edit_end(State &s, bool keep, bool = true) {
@@ -1434,7 +1435,7 @@ extern "C" bool touch_event(const SDL_Event *e) {
         uint64_t b = finger_buttons(*f);                                                 // which reads the buttons at
         if (b) pulse(s, b, MIN_PRESS - (now - f->t0), 0, is_dpad(f->ctl));              // its own update rate)
     }
-    if (f->kind == F_STICK) s.stick_on = false;
+    if (f->kind == F_STICK) s.stick_on = false, s.run = false;
     if (f->kind == F_EDIT) s.pinch = false;
     if (item_gesture(*f) && cancel) cancel_item_gestures(s);
     if (f->kind == F_ITEM && tap && !f->done && !f->bar_open && !f->part && now - f->t0 < 220 * MS &&
@@ -1634,8 +1635,15 @@ extern "C" uint64_t touch_input(bool pad_connected, bool typing, uint64_t *butto
         if (*buttons & ~was & OPENS) g_press_ns = now;
         was = *buttons;
     }
+    bool was_run = s.run;
+    s.run = false;
+    if (config_live_touch_auto_r() && s.stick_on && !s.menu && s.h > 0) {
+        float r = DEFS[C_STICK].r * s.layout.scale[C_STICK] * s.h;
+        // A small edge hysteresis prevents repeated R presses while the thumb rests on the rim.
+        s.run = r > 0 && hypotf(s.fx - s.bx, s.fy - s.by) >= r * (was_run ? .95f : .98f);
+        if (s.run) touch_b |= B(BTN_R), *buttons |= B(BTN_R);
+    }
     if (classic || s.layout_profile == UNIVERSAL_LAYOUT) {
-        s.run = false;
         if (s.stick_on && s.h > 0) {
             float r = DEFS[C_STICK].r * s.layout.scale[C_STICK] * s.h;
             if (r > 0) {
@@ -1665,7 +1673,6 @@ extern "C" uint64_t touch_input(bool pad_connected, bool typing, uint64_t *butto
         }
         return touch_b;
     }
-    bool moving = false;
     if (s.stick_on && s.h > 0) {
         float r = DEFS[C_STICK].r * s.layout.scale[C_STICK] * s.h;
         float dx = (s.kx - s.bx) / r, dy = -(s.ky - s.by) / r;  // (screen y is down, the stick's up)
@@ -1675,28 +1682,7 @@ extern "C" uint64_t touch_input(bool pad_connected, bool typing, uint64_t *butto
         if (m > .04f) {
             float o = .28f + .72f * std::min(1.0f, (m - .04f) / .86f), t = o / m;
             *lx += (int)(dx * t * 32767), *ly += (int)(dy * t * 32767);
-            moving = m > .3f;
         }
-    }
-    // the thumb past the stick's rim runs: R held (the dash, weapon sheathed; drawn, some weapons guard with it), with
-    // a little hysteresis so the edge does not flicker
-    s.run = false;
-    // (only sheathed: with the weapon out, R is some weapons' guard - the thumb at the edge in a fight walks)
-    int drawn = weapon_drawn();
-    static int drawn_was = -2;
-    if (drawn != drawn_was) {
-        static int dbg = -1;
-        if (dbg < 0) dbg = getenv("MHGU_TOUCH_LOG") != nullptr;
-        if (dbg) fprintf(stderr, "[touch] weapon %s\n", drawn == 1 ? "out" : drawn == 0 ? "sheathed" : "(not known)");
-        drawn_was = drawn;
-    }
-    if (config_live_touch_auto_r() && s.stick_on && moving && s.h > 0 && drawn != 1) {
-        float r = DEFS[C_STICK].r * s.layout.scale[C_STICK] * s.h, d = hypotf(s.fx - s.bx, s.fy - s.by);
-        static bool was;
-        was = d > r * (was ? 1.45f : 1.6f);  // (well past the rim: a thumb at the edge in a fight still walks;
-                                             // r is the stick's size in the layout: a bigger stick, farther)
-        s.run = was;
-        if (s.run) touch_b |= B(BTN_R), *buttons |= B(BTN_R);
     }
     return touch_b;
 }
@@ -1803,7 +1789,7 @@ extern "C" void touch_reset(void) {
     itembar_touch_cancel();
     for (Finger &f : s.f) f.kind = F_NONE;
     for (Pulse &p : s.pulse) p.until = 0;
-    s.stick_on = false, s.held = 0, s.cam_dx = s.cam_dy = 0, s.pinch = false;
+    s.stick_on = false, s.run = false, s.held = 0, s.cam_dx = s.cam_dy = 0, s.pinch = false;
     s.ammo_hold = s.ammo_ready = s.bar_since = 0;
     s.ammo_pulse = {};
 }

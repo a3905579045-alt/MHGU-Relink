@@ -179,6 +179,31 @@ class SettingsLocaleTest(unittest.TestCase):
         self.assertIn("瞄准（R）", aim_help[3])
         self.assertNotIn("防御", aim_help[3])
 
+    def test_auto_r_switch_and_help(self):
+        source = (ROOT / "runtime/settings_panel.cpp").read_text(encoding="utf-8")
+        catalog = (ROOT / "runtime/settings_locale.h").read_text(encoding="utf-8")
+        chinese = (ROOT / "runtime/settings_locale_zh.h").read_text(encoding="utf-8")
+        labels = {en: zh for en, _, zh in rows(catalog, 3)}
+        labels.update(rows(chinese.split("static inline const char *settings_help_zh(", 1)[0], 2))
+        self.assertEqual(labels["Full stick automatically holds R"], "拉满摇杆自动按 R")
+        auto_r = source.split('add_bool(r, "touch.auto_r",', 1)[1].split(";", 1)[0]
+        self.assertIn('&c.touch_auto_r, ini("AutoR")', auto_r)
+        help_key = literals(source.split('add_bool(r, "touch.auto_r",', 1)[1].split('r.back().help = tr(', 1)[1])[0]
+        for phrase in ("fixed or floating", "villages and quests", "weapon drawn or sheathed",
+                       "manual R stays independent", "Default: Off"):
+            self.assertIn(phrase, help_key)
+        for phrase in ("固定或浮动", "村庄和任务", "拔刀、收刀", "手动 R 独立", "默认：关闭"):
+            self.assertIn(phrase, labels[help_key])
+        floating_help = literals(source.split('add_bool(r, "touch.floating",', 1)[1].split('r.back().help = tr(', 1)[1])[0]
+        self.assertIn("never the camera", floating_help)
+        self.assertIn("separate switch", floating_help)
+        self.assertNotIn("never turns the camera or automatically presses R", source)
+        self.assertLess(source.index('"touch.floating"'), source.index('"touch.auto_r"'))
+        help_rows = dict(rows(chinese.split("static inline const char *settings_help_zh(", 1)[1], 2))
+        self.assertIn("拔刀、收刀", help_rows["AutoR"])
+        self.assertIn("默认：关闭", help_rows["AutoR"])
+        self.assertNotIn("兼容旧配置", help_rows["AutoR"])
+
     def test_chinese_help_coverage(self):
         source = (ROOT / "runtime/settings_panel.cpp").read_text(encoding="utf-8")
         config = (ROOT / "runtime/config.c").read_text(encoding="utf-8")

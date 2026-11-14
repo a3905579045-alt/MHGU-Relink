@@ -26,7 +26,7 @@ static SDL_AtomicInt voice_mode, voice_noise, voice_mic = {100}, voice_level = {
 static SDL_AtomicInt live_fps, live_fov, live_mouse, live_draw = {0x3f800000}, live_fxaa = {1}, live_msaa = {1},
                      live_vsync = {1}, live_face, live_menu_confirm, live_background = {1}, live_combo, live_chat_key,
                      live_fxaa_mode, live_smooth, live_discord, live_discord_hunter, live_share_urgent, live_binds[BINDS][BIND_KEYS],
-                     live_touch, live_touch_profile, live_touch_hud, live_touch_auto_r = {1}, live_touch_show[TB_COUNT],
+                     live_touch, live_touch_profile, live_touch_hud, live_touch_auto_r, live_touch_show[TB_COUNT],
                      live_touch_combo[TOUCH_LAYOUT_PROFILES][TOUCH_COMBOS], live_touch_combo_pad[TOUCH_LAYOUT_PROFILES][TOUCH_COMBOS],
                      live_touch_cam, live_touch_opacity, live_lock_on = {1}, live_persistent_lock_on,
                      live_touch_vibration = {1}, live_phone_rumble = {1}, live_show_stats, live_pause_bg = {1},

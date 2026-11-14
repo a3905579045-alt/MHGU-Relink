@@ -2438,7 +2438,9 @@ std::vector<Row> main_rows() {
                    [](int v) { c.touch_controls = v; }, ini("Controls"));
         add_bool(r, "touch.hud", "Move the HUD for touch", &c.touch_hud, ini("MoveHUD"));
         add_bool(r, "touch.floating", "Floating left stick", &c.touch_floating, ini("FloatingStick"));
-        r.back().help = tr("On: the left stick appears where your finger lands. Off: it stays at the saved position. The left stick only moves the hunter; it never turns the camera or automatically presses R.");
+        r.back().help = tr("On: the left stick appears where your finger lands. Off: it stays at the saved position. The stick moves the hunter, never the camera. Automatic R uses its separate switch.");
+        add_bool(r, "touch.auto_r", "Full stick automatically holds R", &c.touch_auto_r, ini("AutoR"));
+        r.back().help = tr("On: fully push the fixed or floating movement stick to hold R in villages and quests, with the weapon drawn or sheathed. Release or move inward to stop automatic R; manual R stays independent. Default: Off.");
         add_bool(r, "lock.on", "Lock-on", &c.lock_on, ini("LockOn"));
         r.back().help = tr("Tap the target icon to lock on, then tap again to switch monsters. Hold it for half a second, or click a controller's right stick, to toggle the lock. Off: the icon turns the camera to the monster once, as in the original game.");
         add_bool(r, "lock.persistent", "Persistent lock-on", &c.persistent_lock_on, ini("PersistentLockOn"));
