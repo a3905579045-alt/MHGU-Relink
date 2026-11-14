@@ -37,7 +37,7 @@
 #include <vector>
 
 namespace {
-enum class View { Main, Keyboard, CloseChanges, Exit, Restart, Reset, Move, Conflicts, KeyCapture, Keybinds, Actions, TouchButtons, TouchPresets, ComboEdit,
+enum class View { Main, Keyboard, CloseChanges, Exit, Restart, Reset, Move, Conflicts, KeyCapture, Keybinds, Actions, TouchButtons, TouchTemplates, TemplateChanges, TemplateOverwrite, ComboEdit,
                   PadList, PadMap };
 enum class Command { None, Save };
 struct Row {
@@ -128,10 +128,11 @@ struct State {
 } s;
 std::atomic<bool> request_exit, request_back, is_dirty, is_confirming, is_capturing, capture_mouse, capture_wheel,
     capture_pointing, capture_pad;
-struct TouchPresetTab {
-    std::string names[TOUCH_PRESET_COUNT], notice;
-    int bindings[TOUCH_PRESET_COUNT] = {}, current = -1, selected = 0, bind_weapon = 0;
-} touch_presets;
+struct TouchTemplateTab {
+    std::string names[TOUCH_TEMPLATE_COUNT], name, notice;
+    bool valid[TOUCH_TEMPLATE_COUNT] = {}, saving = false;
+    int selected = 0;
+} touch_templates;
 // The game actions (runtime/actions.h, the [Actions*] sections of the ini): edited as a draft like the settings, saved
 // with them. dev: the device whose bindings the rows show (0 the controller, 1 keyboard and mouse); weapon: 0 every
 // weapon, 1..15 that class's own bindings; capture: the action an input is being chosen for (-1: none)
@@ -349,6 +350,7 @@ int mod_index(const std::string &name) {
     return -1;
 }
 bool dirty();
+bool save();
 struct GuideLayout {
     ImVec2 offset[4];
     float height = 0;
@@ -428,7 +430,7 @@ void draw_guides(ImGuiWindow *window, const GuideLayout &layout, float top) {
 }
 bool confirmation() {
     return s.view == View::CloseChanges || s.view == View::Exit || s.view == View::Restart ||
-           s.view == View::Reset;
+           s.view == View::Reset || s.view == View::TemplateChanges || s.view == View::TemplateOverwrite;
 }
 bool equal(const Config &a, const Config &b) {
 #define SAME(f)                                                                                              \
@@ -543,7 +545,8 @@ bool equal(const Config &a, const Config &b) {
         return false;
     if (memcmp(a.touch_show, b.touch_show, sizeof a.touch_show) ||
         memcmp(a.touch_weapon_combo, b.touch_weapon_combo, sizeof a.touch_weapon_combo) ||
-        memcmp(a.touch_weapon_combo_pad, b.touch_weapon_combo_pad, sizeof a.touch_weapon_combo_pad))
+        memcmp(a.touch_weapon_combo_pad, b.touch_weapon_combo_pad, sizeof a.touch_weapon_combo_pad) ||
+        memcmp(a.touch_combo_name, b.touch_combo_name, sizeof a.touch_combo_name))
         return false;
     if (memcmp(a.binds, b.binds, sizeof a.binds))
         return false;
@@ -804,30 +807,49 @@ void action(std::vector<Row> &rows, const std::string &id, const std::string &na
     r.enabled = enabled;
     rows.push_back(std::move(r));
 }
-void refresh_touch_presets() {
-    for (int i = 0; i < TOUCH_PRESET_COUNT; i++) {
-        touch_presets.names[i] = touch_preset_name(i);
-        touch_presets.bindings[i] = touch_preset_binding(i);
+void refresh_touch_templates() {
+    for (int i = 0; i < TOUCH_TEMPLATE_COUNT; i++) {
+        char name[TOUCH_TEMPLATE_NAME_MAX];
+        touch_templates.valid[i] = touch_template_info(i, name, sizeof name);
+        touch_templates.names[i] = name;
     }
-    int current = touch_preset_current();
-    touch_presets.current = current >= 0 && current < TOUCH_PRESET_COUNT ? current : -1;
 }
-void open_touch_presets() {
-    refresh_touch_presets();
-    if (touch_presets.current >= 0) touch_presets.selected = touch_presets.current;
-    touch_presets.notice.clear();
-    push(View::TouchPresets, "tp." + std::to_string(touch_presets.selected));
+void select_touch_template(int slot) {
+    touch_templates.selected = slot;
+    touch_templates.name = touch_templates.valid[slot] ? touch_templates.names[slot] : fmt("Template %d", slot + 1);
+    touch_templates.notice.clear();
+    s.error.clear();
 }
-void use_touch_preset(int preset, int weapon = -1) {
-    touch_presets.selected = preset;
-    touch_presets.notice.clear();
-    if (!touch_preset_use(preset, weapon)) {
-        s.error = tr("Could not apply this preset. Check that the files folder is writable and try again.");
+void open_touch_templates() {
+    refresh_touch_templates();
+    select_touch_template(touch_templates.selected);
+    push(View::TouchTemplates, "tp." + std::to_string(touch_templates.selected));
+}
+void run_touch_template() {
+    int slot = touch_templates.selected;
+    bool saving = touch_templates.saving;
+    touch_templates.notice.clear();
+    if (!(saving ? touch_template_save(slot, touch_templates.name.c_str()) : touch_template_use(slot))) {
+        s.error = tr(saving ? "Could not save this template. Check that the files folder is writable and try again."
+                            : "Could not apply this template. Check its file and the files folder, then try again.");
         return;
     }
-    refresh_touch_presets();
+    if (!saving) s.saved = s.draft = config_editable();
+    refresh_touch_templates();
     s.error.clear();
-    touch_presets.notice = fmt("Selected preset %d/20: %s", preset + 1, tr(touch_presets.names[preset].c_str()));
+    touch_templates.notice = fmt(saving ? "Saved template %d/20: %s" : "Applied template %d/20: %s",
+                                 slot + 1, touch_templates.names[slot].c_str());
+}
+void continue_touch_template() {
+    refresh_touch_templates();
+    if (touch_templates.saving && touch_templates.valid[touch_templates.selected])
+        push(View::TemplateOverwrite, "dialog.cancel");
+    else run_touch_template();
+}
+void request_touch_template(bool saving) {
+    touch_templates.saving = saving;
+    if (dirty() || pending_text()) push(View::TemplateChanges, "dialog.cancel");
+    else continue_touch_template();
 }
 // A text setting (a char array of the draft, size bytes) typed on the on-screen keyboard; shown: its row's value
 void text(std::vector<Row> &rows, const char *id, const char *name, char *field, size_t size, const std::string &shown,
@@ -841,7 +863,7 @@ void text(std::vector<Row> &rows, const char *id, const char *name, char *field,
     r.activate = [name, at, size]() {
         keyboard(tr(name), (char *)&s.draft + at, size - 1, [at, size](const std::string &typed, std::string &error) {
             Config temp = s.draft;
-            SDL_strlcpy((char *)&temp + at, typed.c_str(), size);
+            SDL_utf8strlcpy((char *)&temp + at, typed.c_str(), size);
             char why[512];
             if (!config_validate(&temp, why, sizeof why)) {
                 error = settings_text(s.draft.language, why);
@@ -1870,6 +1892,7 @@ void reset_section() {
         memcpy(c.touch_show, f.touch_show, sizeof c.touch_show);
         memcpy(c.touch_weapon_combo, f.touch_weapon_combo, sizeof c.touch_weapon_combo);
         memcpy(c.touch_weapon_combo_pad, f.touch_weapon_combo_pad, sizeof c.touch_weapon_combo_pad);
+        memcpy(c.touch_combo_name, f.touch_combo_name, sizeof c.touch_combo_name);
         SDL_strlcpy(c.chat_key, f.chat_key, sizeof c.chat_key);
         memcpy(c.binds, f.binds, sizeof c.binds);
         break;
@@ -2414,10 +2437,8 @@ std::vector<Row> main_rows() {
         add_choice(r, "touch", "Touch controls", c.touch_controls, {tr("Auto"), tr("On"), tr("Off")},
                    [](int v) { c.touch_controls = v; }, ini("Controls"));
         add_bool(r, "touch.hud", "Move the HUD for touch", &c.touch_hud, ini("MoveHUD"));
-        add_bool(r, "touch.auto_r", "Full stick automatically holds R", &c.touch_auto_r, ini("AutoR"));
-        r.back().help = tr("Push the movement stick past its rim to hold R while sheathed. Off keeps movement and manual R unchanged.");
         add_bool(r, "touch.floating", "Floating left stick", &c.touch_floating, ini("FloatingStick"));
-        r.back().help = tr("On: the left stick is hidden until your finger lands, then appears there. Off: it stays at the saved layout position.");
+        r.back().help = tr("On: the left stick appears where your finger lands. Off: it stays at the saved position. The left stick only moves the hunter; it never turns the camera or automatically presses R.");
         add_bool(r, "lock.on", "Lock-on", &c.lock_on, ini("LockOn"));
         r.back().help = tr("Tap the target icon to lock on, then tap again to switch monsters. Hold it for half a second, or click a controller's right stick, to toggle the lock. Off: the icon turns the camera to the monster once, as in the original game.");
         add_bool(r, "lock.persistent", "Persistent lock-on", &c.persistent_lock_on, ini("PersistentLockOn"));
@@ -2446,7 +2467,7 @@ std::vector<Row> main_rows() {
                     touch_edit_begin();  // (the editor starts once the menu is closed: one back, or the unsaved-changes dialog)
                     request_back.store(true);
                 });
-                r.back().help = tr("Edit the active layout during quests. Outside quests, edit 20 presets and two general layouts: Melee layout 2 and Ranged layout. Presets 1-15 start from individual weapons and Prowler; preset 16 uses traditional virtual buttons. Presets 17-20 copy a base weapon's layout. Save and use selects any preset for quests, regardless of weapon.");
+                r.back().help = tr("Edit the universal layout used in quests and menus. Save in the editor, then open Custom touch templates to save its positions, sizes and six combined buttons as a template.");
             }
         }
         action(r, "pad.map", tr("Map a controller"), []() { push(View::PadList, "pad.0"); });
@@ -2459,8 +2480,8 @@ std::vector<Row> main_rows() {
         add_bool(r, "menu.chord", "Plus + Minus opens this menu", &c.menu_chord, ini("MenuChord"));
         r.back().help = tr("Pressing Plus and Minus together (Start + Back on a controller) opens this menu. Turn it off to keep that combination for the game or a cheat, for example when you play with a keyboard and mouse. F1 still opens the menu.");
 #endif
-        action(r, "touch.presets", tr("Touch layout presets"), []() { open_touch_presets(); });
-        r.back().help = tr("Tap any saved preset to use it in quests, regardless of weapon. Preset 16 uses traditional virtual buttons; presets 17-20 need a base weapon only for initialization. Outside quests, switch between Melee layout 2 and Ranged layout.");
+        action(r, "touch.templates", tr("Custom touch templates"), []() { open_touch_templates(); });
+        r.back().help = tr("Save the current layout and its six combined buttons in one of 20 named slots. Applying a template restores positions, sizes, combined buttons, controller bindings and button names.");
         break;
     case 3:
         number(r, "port", "Host port (TCP / UDP)", &c.ldn_port, (int)lo("Port"), (int)hi("Port"), 1, ini("Port"));
@@ -2718,7 +2739,7 @@ bool save() {
     return true;
 }
 // Which of the game's buttons are on the screen, and the player's own
-const char *const TB_TITLES[TB_COUNT] = {"Attacks", "Dodge (B)", "Guard (R)", "Sheathe (Y)", "Game menu (+)", "Minus (-)", "D-pad",
+const char *const TB_TITLES[TB_COUNT] = {"Attacks", "Dodge (B)", "Aim (R)", "Sheathe (Y)", "Game menu (+)", "Minus (-)", "D-pad",
                                          "L", "ZL", "ZR", "Left stick click (L3)", "Right stick click (R3)", "Movement stick",
                                          "Layout for bows and bowguns", "Fire / shoot", "Reload / melee", "Aim",
                                          "Crouching fire / coating", "Ammo arrows", "Item arrows", "ZL in menus", "ZR in menus"};
@@ -2726,70 +2747,67 @@ const char *const TB_KEYS[TB_COUNT] = {"ShowAttacks", "ShowDodge", "ShowGuard", 
                                        "ShowL", "ShowZL", "ShowZR", "ShowL3", "ShowR3", "ShowStick", "ShowRanged", "ShowFire",
                                        "ShowSecond", "ShowAim", "ShowRangedSpecial", "ShowAmmo", "ShowItemArrows", "ShowMenuZL",
                                        "ShowMenuZR"};
-int s_combo, s_combo_profile;  // the combined button and weapon layout being edited
+int s_combo;  // the combined button being edited in the universal layout
+void set_touch_combo(int index, uint32_t mask) {
+    char value[128];
+    config_combo_text(mask, value, sizeof value);
+    char *binding = s.draft.touch_weapon_combo[TOUCH_UNIVERSAL_PROFILE][index];
+    size_t capacity = sizeof s.draft.touch_weapon_combo[TOUCH_UNIVERSAL_PROFILE][index];
+    if (strlen(value) >= capacity) {
+        s.error = tr("This combination is too long. Remove a button before adding another.");
+        return;
+    }
+    SDL_strlcpy(binding, value, capacity);
+    s.error.clear();
+}
 void touch_button_rows(std::vector<Row> &r) {
     Config &c = s.draft;
-    int profile = config_live_touch_profile();
-    if (profile < 0 || profile >= TOUCH_LAYOUT_PROFILES) profile = 0;
+    const int profile = TOUCH_UNIVERSAL_PROFILE;
     header(r, "tb.head", tr("Buttons on the screen"));
     for (int i = 0; i < TB_COUNT; i++) {
-        if (i == TB_AIM) continue;
+        if ((i >= TB_RANGED && i <= TB_AMMO) || i == TB_MENU_ZL || i == TB_MENU_ZR) continue;
         add_bool(r, ("tb." + std::to_string(i)).c_str(), TB_TITLES[i], &c.touch_show[i], nullptr);
         r.back().key = TB_KEYS[i];
     }
     header(r, "tc.head", tr("Combined buttons"));
     for (int k = 0; k < TOUCH_COMBOS; k++) {
-        action(r, "tc." + std::to_string(k), fmt("Button %d", k + 1), [k]() {
+        const char *name = c.touch_combo_name[k];
+        action(r, "tc." + std::to_string(k), name[strspn(name, " \t")] ? name : fmt("Button %d", k + 1), [k]() {
             s_combo = k;
-            s_combo_profile = config_live_touch_profile();
-            if (s_combo_profile < 0 || s_combo_profile >= TOUCH_LAYOUT_PROFILES) s_combo_profile = 0;
-            push(View::ComboEdit, "ce.0");
+            push(View::ComboEdit, "ce.name");
         });
         r.back().value = c.touch_weapon_combo[profile][k][0] ? c.touch_weapon_combo[profile][k] : tr("Empty");
+        r.back().help = tr("The universal layout has six combined buttons. A template saves each button's combination, controller binding and name.");
     }
-    r.back().help = tr("A button of your own presses several of the game's together. Place it with Customize touch controls.");
     action(r, "tb.back", tr("Back"), []() { pop(); });
 }
-void touch_preset_rows(std::vector<Row> &r, bool *open) {
-    if (!touch_presets.notice.empty()) header(r, "tp.notice", touch_presets.notice);
-    for (int i = 0; i < TOUCH_PRESET_COUNT; i++) {
-        action(r, "tp." + std::to_string(i), fmt("Preset %d/20: %s", i + 1, tr(touch_presets.names[i].c_str())), [i]() {
-            touch_presets.selected = i;
-            if (i > TOUCH_UNIVERSAL_PRESET && touch_presets.bindings[i] < 0) {
-                touch_presets.notice.clear();
-                s.error.clear();
-                touch_presets.bind_weapon = 0;
-                focus("tp.bind");
-            } else use_touch_preset(i);
-        });
-        r.back().current = i == touch_presets.current;
-        if (i > TOUCH_UNIVERSAL_PRESET) {
-            int weapon = touch_presets.bindings[i];
-            r.back().value = weapon >= 0 ? fmt("Base: %s", tr(touch_presets.names[weapon].c_str())) : tr("Not initialized");
-        }
-        r.back().help = tr(i == TOUCH_UNIVERSAL_PRESET ?
-            "Tap to use traditional virtual buttons in quests, regardless of weapon. No extra Save is needed." :
-            i > TOUCH_UNIVERSAL_PRESET && touch_presets.bindings[i] < 0 ?
-            "Choose a base weapon to initialize this reserved preset, then use it with any weapon." :
-            "Tap to use this saved preset in quests, regardless of weapon. No extra Save is needed.");
+void touch_template_rows(std::vector<Row> &r) {
+    if (!touch_templates.notice.empty()) header(r, "tp.notice", touch_templates.notice);
+    for (int i = 0; i < TOUCH_TEMPLATE_COUNT; i++) {
+        action(r, "tp." + std::to_string(i), fmt("Template %d/20: %s", i + 1,
+               touch_templates.valid[i] ? touch_templates.names[i].c_str() : tr("Empty")), [i]() { select_touch_template(i); });
+        r.back().current = i == touch_templates.selected;
+        r.back().help = tr("Select a slot, then save the current layout or apply its saved template. Empty or invalid slots cannot be applied.");
     }
-    int selected = touch_presets.selected;
-    if (selected > TOUCH_UNIVERSAL_PRESET) {
-        std::vector<std::string> weapons;
-        for (int i = 0; i < TOUCH_UNIVERSAL_PRESET; i++) weapons.push_back(tr(touch_presets.names[i].c_str()));
-        int bound = touch_presets.bindings[selected];
-        add_choice(r, "tp.bind", "Base weapon", bound >= 0 ? bound : touch_presets.bind_weapon, weapons, [selected](int weapon) {
-            touch_presets.bind_weapon = weapon;
-            use_touch_preset(selected, weapon);
+    action(r, "tp.name", tr("Template name"), []() {
+        keyboard(tr("Template name"), touch_templates.name, TOUCH_TEMPLATE_NAME_MAX - 1,
+                 [](const std::string &typed, std::string &error) {
+            bool visible = false;
+            for (unsigned char c : typed) {
+                if (c < 32 || c == 127) { error = tr("Enter a template name on one line."); return false; }
+                if (c != ' ') visible = true;
+            }
+            if (!visible || typed.size() >= TOUCH_TEMPLATE_NAME_MAX) { error = tr("Enter a template name on one line."); return false; }
+            touch_templates.name = typed;
+            return true;
         });
-        r.back().help = tr("Choose a base weapon to copy its current layout into this preset and use it immediately. Changing the base replaces this preset's saved layout; it does not limit which weapon can use it.");
-    }
-    action(r, "tp.edit", tr("Edit selected preset"), [open, selected]() {
-        touch_edit_preset(selected);
-        ask_close(open);
-    }, selected <= TOUCH_UNIVERSAL_PRESET || touch_presets.bindings[selected] >= 0);
-    r.back().value = fmt("Preset %d/20: %s", selected + 1, tr(touch_presets.names[selected].c_str()));
-    r.back().help = tr("Closes settings and opens the selected preset in the layout editor. Save there keeps position and size changes.");
+    });
+    r.back().value = touch_templates.name;
+    action(r, "tp.save", tr("Save current layout to this slot"), []() { request_touch_template(true); });
+    r.back().help = tr("Saves positions, sizes, HUD offsets, all six combined buttons, their controller bindings and names. Replacing an existing template asks for confirmation.");
+    action(r, "tp.use", tr("Apply selected template"), []() { request_touch_template(false); },
+           touch_templates.valid[touch_templates.selected]);
+    r.back().help = tr("Restores this template's layout and combined buttons immediately. Unsaved settings must first be saved or discarded.");
     action(r, "tp.back", tr("Back"), []() { pop(); });
 }
 void combo_rows(std::vector<Row> &r) {
@@ -2797,20 +2815,12 @@ void combo_rows(std::vector<Row> &r) {
     static const int ORDER[16] = {0, 1, 2, 3, 6, 7, 8, 9, 10, 11, 13, 15, 12, 14, 4, 5};  // (the face buttons first)
     Config &c = s.draft;
     int k = s_combo;
-    // Keep the saved profile slots stable; only two of the four legacy layouts remain selectable.
-    static const std::array<int, 18> profiles = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 18, TOUCH_UNIVERSAL_PROFILE};
-    auto selected = std::find(profiles.begin(), profiles.end(), s_combo_profile);
-    if (selected == profiles.end()) {
-        s_combo_profile = 16;
-        selected = profiles.begin() + TOUCH_WEAPON_LAYOUTS;
-    }
-    add_choice(r, "ce.weapon", "Touch layout", (int)(selected - profiles.begin()),
-               {tr("Great Sword"), tr("Sword & Shield"), tr("Hammer"), tr("Lance"), tr("Heavy Bowgun"), tr("Light Bowgun"),
-                tr("Long Sword"), tr("Switch Axe"), tr("Gunlance"), tr("Bow"), tr("Dual Blades"), tr("Hunting Horn"),
-                tr("Insect Glaive"), tr("Charge Blade"), tr("Prowler"), tr("Melee layout 2"), tr("Ranged layout"),
-                tr("Universal (virtual buttons)")},
-               [](int v) { s_combo_profile = profiles[v]; });
-    int profile = s_combo_profile >= 0 && s_combo_profile < TOUCH_LAYOUT_PROFILES ? s_combo_profile : 0;
+    const int profile = TOUCH_UNIVERSAL_PROFILE;
+    const std::string name_key = "Combo" + std::to_string(k + 1) + "Name";
+    const char *name = c.touch_combo_name[k];
+    text(r, "ce.name", "Button name", c.touch_combo_name[k], sizeof c.touch_combo_name[k],
+         name[strspn(name, " \t")] ? name : tr("Default"), name_key.c_str());
+    r.back().help = tr("A custom name shown on this combined button. Leave it empty to show the button combination. Names are saved in custom templates.");
     uint32_t mask = config_combo_mask(c.touch_weapon_combo[profile][k]);
     for (int n = 0; n < 16; n++) {
         int b = ORDER[n];
@@ -2818,13 +2828,8 @@ void combo_rows(std::vector<Row> &r) {
         row.id = "ce." + std::to_string(n);
         row.title = tr(NAMES[b]);
         row.toggle = mask >> b & 1;
-        row.activate = [k, profile, b, mask]() {
-            config_combo_text(mask ^ 1u << b, s.draft.touch_weapon_combo[profile][k], sizeof s.draft.touch_weapon_combo[profile][k]);
-        };
-        row.adjust = [k, profile, b, mask](int d) {
-            config_combo_text(d > 0 ? mask | 1u << b : mask & ~(1u << b), s.draft.touch_weapon_combo[profile][k],
-                              sizeof s.draft.touch_weapon_combo[profile][k]);
-        };
+        row.activate = [k, b, mask]() { set_touch_combo(k, mask ^ 1u << b); };
+        row.adjust = [k, b, mask](int d) { set_touch_combo(k, d > 0 ? mask | 1u << b : mask & ~(1u << b)); };
         r.push_back(std::move(row));
     }
     add_choice(r, "ce.pad", "Controller button", c.touch_weapon_combo_pad[profile][k],
@@ -2834,6 +2839,7 @@ void combo_rows(std::vector<Row> &r) {
     action(r, "ce.clear", tr("Clear"), [k, profile]() {
         s.draft.touch_weapon_combo[profile][k][0] = 0;
         s.draft.touch_weapon_combo_pad[profile][k] = 0;
+        s.draft.touch_combo_name[k][0] = 0;
     });
     action(r, "ce.back", tr("Back"), []() { pop(); });
 }
@@ -2919,7 +2925,7 @@ std::vector<Row> rows_for_view(bool *open) {
         return main_rows();
     std::vector<Row> r;
     if (s.view == View::TouchButtons) { touch_button_rows(r); return r; }
-    if (s.view == View::TouchPresets) { touch_preset_rows(r, open); return r; }
+    if (s.view == View::TouchTemplates) { touch_template_rows(r); return r; }
     if (s.view == View::ComboEdit) { combo_rows(r); return r; }
     if (s.view == View::PadList) { pad_list_rows(r); return r; }
     if (s.view == View::PadMap) { pad_map_rows(r); return r; }
@@ -2980,6 +2986,19 @@ std::vector<Row> rows_for_view(bool *open) {
         });
         if (s.view == View::Reset)
             action(r, "dialog.reset", tr("Reset"), []() { reset_section(); });
+        if (s.view == View::TemplateOverwrite)
+            action(r, "dialog.apply", tr("Replace template"), []() { pop(); run_touch_template(); });
+        if (s.view == View::TemplateChanges) {
+            action(r, "dialog.save", tr("Save and continue"), []() {
+                if (save()) { pop(); continue_touch_template(); }
+            });
+            action(r, "dialog.discard", tr("Discard and continue"), []() {
+                discard();
+                s.keyboard.buffer = s.keyboard.original;
+                pop();
+                continue_touch_template();
+            });
+        }
         if (s.view == View::CloseChanges) {
             action(r, "dialog.save", tr("Save and close"), [open]() {
                 if (save())
@@ -3066,9 +3085,9 @@ const PhoneHelp PHONE_HELP[] = {
      "按猎人人数设置集会所任务中大型怪物的体力。加入他人集会所时使用主机的设置。"},
     {"FOV", "How much of the scene you see: higher shows more.", "Cuánto se ve de la escena: un valor mayor muestra más.",
      "镜头可见的场景范围。数值越大，能看到的范围越广。"},
-    {"ShowGuard", "Shows or hides the game's native R touch button. In non-classic ranged layouts, this controls the single R at the former Aim position. Its action follows the game's control settings.",
-     "Muestra u oculta el botón táctil R nativo del juego. En los diseños a distancia no clásicos, controla el único R en la antigua posición de Apuntar. Su función depende de los controles del juego.",
-     "显示或隐藏游戏原生 R 触屏键。非传统远程布局仅保留原瞄准位置的 R，由此开关控制；按键作用遵循游戏内操作设置。"},
+    {"ShowGuard", "Shows or hides the universal layout's aim (R) button. Its action follows the game's control settings.",
+     "Muestra u oculta el botón de apuntar (R) del diseño universal. Su función depende de los controles del juego.",
+     "显示或隐藏通用布局的瞄准（R）键。按键作用遵循游戏内操作设置。"},
     {"ShowRanged", "With a bow or a bowgun in hand, in a hunt, the touch controls change to a layout of their own. Its buttons are moved in the editor.",
      "Con un arco o una ballesta en la mano, en una cacería, los controles táctiles pasan a un layout propio. Sus botones se mueven en el editor.",
      "任务中使用弓或弩炮时，切换为专用触控布局。可在触控编辑器中调整按钮位置。"},
@@ -3728,7 +3747,8 @@ std::string view_title() {
                     : s.view == View::Conflicts  ? "Mod conflicts"
                     : s.view == View::Keybinds   ? "Keybinds"
                     : s.view == View::TouchButtons ? "Buttons on the screen"
-                    : s.view == View::TouchPresets ? "Touch layout presets"
+                    : s.view == View::TouchTemplates ? "Custom touch templates"
+                    : s.view == View::TemplateOverwrite ? "Replace this saved template?"
                     : s.view == View::ComboEdit  ? "Combined button"
                     : s.view == View::PadList    ? "Map a controller"
                     : s.view == View::PadMap     ? "Map a controller"

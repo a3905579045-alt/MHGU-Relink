@@ -85,7 +85,7 @@ class SettingsLocaleTest(unittest.TestCase):
                      "ShowAttacks", "ShowDodge", "ShowGuard", "ShowSheathe", "ShowPlus", "ShowMinus", "ShowDpad",
                      "ShowL", "ShowZL", "ShowZR", "ShowL3", "ShowR3", "ShowStick", "ShowRanged", "ShowFire",
                      "ShowSecond", "ShowAim", "ShowRangedSpecial", "ShowAmmo", "ShowItemArrows", "ShowMenuZL",
-                     "ShowMenuZR"}  # (row keys: settings_lookup / PHONE_HELP names, not labels)
+                     "ShowMenuZR", "Combo", "Name"}  # (row/INI keys, including generated ComboNName, not labels)
         visible = {text for text in literals(source) if text and
                    (text[0].isupper() or " " in text) and any(c.isalpha() for c in text)}
         self.assertFalse(visible - set(keys) - unchanged,
@@ -129,6 +129,56 @@ class SettingsLocaleTest(unittest.TestCase):
             self.assertTrue(has_chinese(translated) or translated in technical_names, english)
         self.assertNotIn(chr(0xfffd), chinese)
 
+    def test_general_layout_display_names(self):
+        catalog = (ROOT / "runtime/settings_locale.h").read_text(encoding="utf-8")
+        chinese = (ROOT / "runtime/settings_locale_zh.h").read_text(encoding="utf-8")
+        labels = {en: zh for en, _, zh in rows(catalog, 3)}
+        overrides = dict(rows(chinese.split("static inline const char *settings_help_zh(", 1)[0], 2))
+        for translations in (labels, overrides):
+            self.assertEqual(translations["Melee layout 2"], "近战布局")
+            self.assertEqual(translations["Ranged layout"], "远程布局")
+        # Keep the legacy lookup key while using the same Chinese name in labels and help.
+        self.assertNotRegex(catalog + chinese, r"近战布局\s*2")
+
+    def test_common_template_and_combo_name_labels(self):
+        catalog = (ROOT / "runtime/settings_locale.h").read_text(encoding="utf-8")
+        chinese = (ROOT / "runtime/settings_locale_zh.h").read_text(encoding="utf-8")
+        labels = {en: zh for en, _, zh in rows(catalog, 3)}
+        labels.update(rows(chinese.split("static inline const char *settings_help_zh(", 1)[0], 2))
+        for key in ("Custom touch templates", "Template name", "Button name", "Template %d/20: %s",
+                    "Save current layout to this slot", "Apply selected template",
+                    "Saved template %d/20: %s", "Applied template %d/20: %s",
+                    "The universal layout has six combined buttons. A template saves each button's combination, controller binding and name."):
+            self.assertIn(key, labels)
+            self.assertTrue(has_chinese(labels[key]), key)
+        source = (ROOT / "runtime/settings_panel.cpp").read_text(encoding="utf-8")
+        self.assertIn('"touch.templates"', source)
+        self.assertIn('"ce.name"', source)
+        self.assertNotIn('"ce.weapon"', source)
+        self.assertNotIn('"tp.bind"', source)
+        self.assertNotIn('"touch.presets"', source)
+
+    def test_common_r_is_labeled_aim_with_legacy_visibility_key(self):
+        catalog = (ROOT / "runtime/settings_locale.h").read_text(encoding="utf-8")
+        chinese = (ROOT / "runtime/settings_locale_zh.h").read_text(encoding="utf-8")
+        labels = {en: zh for en, _, zh in rows(catalog, 3)}
+        overrides = dict(rows(chinese.split("static inline const char *settings_help_zh(", 1)[0], 2))
+        for translations in (labels, overrides):
+            self.assertEqual(translations["Aim (R)"], "瞄准 (R)")
+            self.assertEqual(translations["Aim  R"], "瞄准  R")
+            self.assertIn("Guard (R)", translations)  # Legacy lookup remains compatible.
+        source = (ROOT / "runtime/settings_panel.cpp").read_text(encoding="utf-8")
+        titles = literals(source.split("TB_TITLES[TB_COUNT] = {", 1)[1].split("};", 1)[0])
+        keys = literals(source.split("TB_KEYS[TB_COUNT] = {", 1)[1].split("};", 1)[0])
+        self.assertEqual(titles[2], "Aim (R)")
+        self.assertEqual(keys[2], "ShowGuard")
+        phone_table = source.split("const PhoneHelp PHONE_HELP[] = {", 1)[1].split("\n};", 1)[0]
+        aim_help = next(row for row in rows(phone_table, 4) if row[0] == "ShowGuard")
+        self.assertIn("aim (R)", aim_help[1])
+        self.assertIn("apuntar (R)", aim_help[2])
+        self.assertIn("瞄准（R）", aim_help[3])
+        self.assertNotIn("防御", aim_help[3])
+
     def test_chinese_help_coverage(self):
         source = (ROOT / "runtime/settings_panel.cpp").read_text(encoding="utf-8")
         config = (ROOT / "runtime/config.c").read_text(encoding="utf-8")
@@ -148,6 +198,7 @@ class SettingsLocaleTest(unittest.TestCase):
         for number in range(1, 7):
             self.assertIn(f"UniversalCombo{number}", default_keys)
             self.assertIn(f"UniversalCombo{number}Pad", default_keys)
+            self.assertIn(f"Combo{number}Name", default_keys)
         table = config.split("const ConfigSetting g_settings[] = {", 1)[1].split("#undef ON_OFF", 1)[0]
         setting_keys = set(default_keys)
         for _, names in re.findall(r'\{\s*(' + LITERAL + r')\s*,\s*(' + LITERAL + r')', table):
@@ -190,8 +241,10 @@ class SettingsLocaleTest(unittest.TestCase):
         self.assertIn("默认：1.0", translations["MotionGain"])
         self.assertIn("左右", translations["MotionInvertX"])
         self.assertIn("上下", translations["MotionInvertY"])
-        self.assertIn("通用（传统虚拟按键）", translations["Combo1"])
-        self.assertIn("6 个组合键", translations["Combo1"])
+        self.assertIn("通用", translations["Combo1"])
+        self.assertRegex(translations["Combo1"], r"(?:6 个|六个)(?:独立)?组合键")
+        self.assertIn("名称", translations["Combo1Name"])
+        self.assertIn("模板", translations["Combo6Name"])
 
 
 if __name__ == "__main__":

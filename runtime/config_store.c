@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/stat.h>
 #ifdef _WIN32
 #include <windows.h>
 #include <io.h>
@@ -57,6 +58,8 @@ static char live_ldn_server[sizeof saved.ldn_server], live_ldn_key[sizeof saved.
 static SDL_SpinLock live_hp_lock;  // [Monster HP], HubHP: read when a large monster's HP is set (runtime/hle/hpscale.c)
 static HpScale live_hp;
 static Config live_crossplay;  // protected by live_ldn_lock
+static SDL_SpinLock live_touch_name_lock;
+static char live_touch_combo_name[TOUCH_COMBOS][TOUCH_COMBO_NAME_MAX];
 // A save updates changed hot fields only. Saving the volume must not silently
 // remove an unchanged FOV/FPS override supplied by the development environment.
 static void publish_live(const Config *c, bool all) {
@@ -112,6 +115,12 @@ static void publish_live(const Config *c, bool all) {
             SDL_SetAtomicInt(&live_touch_combo[profile][i], (int)config_combo_mask(c->touch_weapon_combo[profile][i]));
             SDL_SetAtomicInt(&live_touch_combo_pad[profile][i], c->touch_weapon_combo_pad[profile][i]);
         }
+    SDL_LockSpinlock(&live_touch_name_lock);
+    for (int i = 0; i < TOUCH_COMBOS; i++) {
+        const char *name = c->touch_combo_name[i];
+        SDL_utf8strlcpy(live_touch_combo_name[i], name[strspn(name, " \t")] ? name : "", sizeof live_touch_combo_name[i]);
+    }
+    SDL_UnlockSpinlock(&live_touch_name_lock);
     if (all || c->lock_on != saved.lock_on) SDL_SetAtomicInt(&live_lock_on, c->lock_on);
     if (all || c->persistent_lock_on != saved.persistent_lock_on)
         SDL_SetAtomicInt(&live_persistent_lock_on, c->persistent_lock_on);
@@ -282,6 +291,14 @@ int config_live_touch_combo_pad(int profile, int index) {
     if (profile < 0 || profile >= TOUCH_LAYOUT_PROFILES || index < 0 || index >= TOUCH_COMBOS) return PADB_NONE;
     return SDL_GetAtomicInt(&live_touch_combo_pad[profile][index]);
 }
+void config_live_touch_combo_name(int index, char *out, size_t size) {
+    if (!out || !size) return;
+    out[0] = 0;
+    if (index < 0 || index >= TOUCH_COMBOS) return;
+    SDL_LockSpinlock(&live_touch_name_lock);
+    SDL_utf8strlcpy(out, live_touch_combo_name[index], size);
+    SDL_UnlockSpinlock(&live_touch_name_lock);
+}
 
 // The names of a combined button's parts, in BTN_* order (hle/input.h)
 static const char *const COMBO_NAMES[16] = {"A", "B", "X", "Y", "L3", "R3", "L", "R", "ZL", "ZR", "Plus", "Minus", "Left", "Up", "Right", "Down"};
@@ -299,10 +316,17 @@ uint32_t config_combo_mask(const char *text) {
     return mask;
 }
 void config_combo_text(uint32_t mask, char *out, size_t size) {
+    if (!out || !size) return;
     size_t n = 0;
     out[0] = 0;
-    for (int i = 0; i < 16; i++)
-        if (mask >> i & 1) n += (size_t)snprintf(out + n, size - n, "%s%s", n ? "+" : "", COMBO_NAMES[i]);
+    for (int i = 0; i < 16; i++) {
+        if (!(mask >> i & 1)) continue;
+        size_t len = strlen(COMBO_NAMES[i]), extra = len + (n != 0);
+        if (extra >= size - n) break;
+        if (n) out[n++] = '+';
+        memcpy(out + n, COMBO_NAMES[i], len + 1);
+        n += len;
+    }
 }
 float config_live_touch_camera(void) { return get_float(&live_touch_cam); }
 float config_live_touch_opacity(void) { return get_float(&live_touch_opacity); }
@@ -410,7 +434,7 @@ bool config_validate(const Config *c, char *error, size_t size) {
 
 // What config_save writes: a setting of the table (setting) or a Quest<number> entry (setting NULL)
 typedef struct { const ConfigSetting *setting; const char *section; char key[64], value[256]; bool seen; } Entry;
-#define ENTRY_MAX (HP_QUESTS_MAX + 448)  // settings, including 15 layouts' combos, and the quest overrides
+#define ENTRY_MAX (HP_QUESTS_MAX + 448 + TOUCH_COMBOS)  // settings, combo display names, and the quest overrides
 static void normalize(const char *s, char *out, size_t size) {
     size_t n = 0;
     for (; *s && n + 1 < size; s++)
@@ -447,7 +471,22 @@ static bool line_says(const Entry *e, const char *eq, const Config *c) {
     Config read = *c;
     return config_parse(e->setting, v, &read) && config_equal(e->setting, &read, c);
 }
-bool config_save(const Config *c, char *error, size_t error_size) {
+static bool move_file(const char *from, const char *to, bool replace) {
+#ifdef _WIN32
+    return MoveFileExA(from, to, MOVEFILE_WRITE_THROUGH | (replace ? MOVEFILE_REPLACE_EXISTING : 0)) != 0;
+#else
+    (void)replace; // callers check backup absence; saves run serially on the UI/game thread
+    return rename(from, to) == 0;
+#endif
+}
+static bool regular_file(const struct stat *status) {
+#ifdef _WIN32
+    return (status->st_mode & _S_IFMT) == _S_IFREG;
+#else
+    return S_ISREG(status->st_mode);
+#endif
+}
+static bool save_files(const Config *c, const char *staged, const char *companion, char *error, size_t error_size) {
     if (!config_validate(c, error, error_size)) return false;
     static Entry entries[ENTRY_MAX];  // (big: off the stack)
     int n = 0;
@@ -525,14 +564,57 @@ bool config_save(const Config *c, char *error, size_t error_size) {
     if (fsync(fileno(out))) ok = false;
 #endif
     if (fclose(out)) ok = false;
-    if (ok) {
-#ifdef _WIN32
-        ok = MoveFileExA(temp, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
-#else
-        ok = rename(temp, path) == 0;
-#endif
-    }
     if (!ok) { remove(temp); return fail(error, error_size, "Could not save settings; the previous file was kept."); }
+    char backup[1200];
+    bool backed_up = false, installed = false;
+    if (companion) {
+        struct stat status;
+        if (snprintf(backup, sizeof backup, "%s.previous", companion) >= (int)sizeof backup ||
+            !strcmp(path, companion) || !strcmp(path, staged) || !strcmp(companion, staged)) {
+            remove(temp);
+            return fail(error, error_size, "Invalid layout save path.");
+        }
+        if (!stat(backup, &status) || errno != ENOENT) {
+            remove(temp);
+            return fail(error, error_size, "A previous layout backup needs recovery before another template can be applied.");
+        }
+        if (stat(staged, &status) || !regular_file(&status)) {
+            remove(temp);
+            return fail(error, error_size, "Could not read the staged layout; previous files were kept.");
+        }
+        if (!stat(companion, &status)) {
+            if (!regular_file(&status) || !move_file(companion, backup, false)) {
+                remove(temp);
+                return fail(error, error_size, "Could not back up the current layout; settings were kept.");
+            }
+            backed_up = true;
+        } else if (errno != ENOENT) {
+            remove(temp);
+            return fail(error, error_size, "Could not read the current layout; settings were kept.");
+        }
+        installed = move_file(staged, companion, false);
+        ok = installed;
+    }
+    if (ok) ok = move_file(temp, path, true);
+    if (!ok) {
+        remove(temp);
+        if (!companion) return fail(error, error_size, "Could not save settings; the previous file was kept.");
+        bool restored = backed_up ? move_file(backup, companion, true) : !installed || remove(companion) == 0;
+        if (!restored)
+            return fail(error, error_size, backed_up
+                ? "Could not restore the previous layout. Settings were kept; recover the .previous layout backup before retrying."
+                : "Could not remove the uncommitted layout. Settings were kept; remove the new layout before retrying.");
+        return fail(error, error_size, "Could not save settings and layout; previous files were kept.");
+    }
     config_store_loaded(c);
+    if (backed_up && remove(backup))
+        fprintf(stderr, "[config] Saved settings and layout, but could not remove %s\n", backup);
     return true;
+}
+bool config_save(const Config *c, char *error, size_t error_size) {
+    return save_files(c, NULL, NULL, error, error_size);
+}
+bool config_save_with_companion(const Config *c, const char *staged, const char *path, char *error, size_t error_size) {
+    if (!staged || !*staged || !path || !*path) return fail(error, error_size, "Invalid layout save path.");
+    return save_files(c, staged, path, error, error_size);
 }

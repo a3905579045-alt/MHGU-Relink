@@ -41,6 +41,7 @@ enum { TB_ATTACKS, TB_DODGE, TB_GUARD, TB_SHEATHE, TB_PLUS, TB_MINUS, TB_DPAD, T
        TB_RANGED, TB_FIRE, TB_SECOND, TB_AIM, TB_RSPECIAL, TB_AMMO, TB_ITEM_ARROWS, TB_MENU_ZL, TB_MENU_ZR, TB_COUNT };
 #define TOUCH_SHOW_DEFAULT {1, 1, 1, 1, 1, 0, 1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0}
 #define TOUCH_COMBOS 6
+#define TOUCH_COMBO_NAME_MAX 64
 #define TOUCH_WEAPON_LAYOUTS 15
 #define TOUCH_LEGACY_LAYOUTS 4
 #define TOUCH_UNIVERSAL_PROFILE (TOUCH_WEAPON_LAYOUTS + TOUCH_LEGACY_LAYOUTS)
@@ -176,6 +177,7 @@ typedef struct {
     char touch_combo[TOUCH_COMBOS][32];  // [Touch] Combo1..: the game's buttons one screen button presses together
                                          // ("A+X"; config_combo_mask); "" none
     int touch_combo_pad[TOUCH_COMBOS];   // [Touch] Combo1Pad..: PADB_*, a controller's button that does the same
+    char touch_combo_name[TOUCH_COMBOS][TOUCH_COMBO_NAME_MAX];  // [Touch] Combo1Name..: empty uses the button names
     char touch_weapon_combo[TOUCH_LAYOUT_PROFILES][TOUCH_COMBOS][32];
     int touch_weapon_combo_pad[TOUCH_LAYOUT_PROFILES][TOUCH_COMBOS];
     int show_fps;             // [Performance] ShowFPS: the frame rate in a box on the screen (runtime/overlay.cpp)
@@ -266,6 +268,10 @@ void config_store_loaded(const Config *config);
 Config config_editable(void);
 Config config_defaults(void);
 bool config_save(const Config *config, char *error, size_t error_size);
+// UI/game thread only, like config_save. Commit a staged layout with its settings;
+// a failed commit restores the old layout, retaining .previous if recovery fails.
+bool config_save_with_companion(const Config *config, const char *staged, const char *path,
+                                char *error, size_t error_size);
 bool config_validate(const Config *config, char *error, size_t error_size);
 // Immutable boot settings stay in g_config. These getters are atomic live values.
 void config_runtime_init(const Config *effective); // After environment/Auto resolution at startup.
@@ -345,6 +351,7 @@ int config_live_touch_profile(void);
 void config_set_touch_profile(int profile);
 uint32_t config_live_touch_combo(int profile, int index);   // per-layout buttons (config_combo_mask)
 int config_live_touch_combo_pad(int profile, int index);    // per-layout PADB_*
+void config_live_touch_combo_name(int index, char *out, size_t size);  // UTF-8 copy; empty uses the button names
 float config_live_touch_camera(void);
 float config_live_touch_opacity(void);
 int config_live_touch_vibration(void);  // [Touch] Vibration

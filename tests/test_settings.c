@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #ifdef _WIN32
+#include <windows.h>
 #define set_env(key, value) _putenv_s(key, value)
 #else
 #define set_env(key, value) setenv(key, value, 1)
@@ -23,6 +24,96 @@ static char *read_file(const char *path) {
     char *text = malloc(size + 1); assert(text);
     assert(fread(text, 1, size, f) == (size_t)size); text[size] = 0;
     fclose(f); return text;
+}
+static void write_file(const char *path, const char *text) {
+    FILE *f = fopen(path, "wb"); assert(f);
+    assert(fputs(text, f) >= 0 && !fclose(f));
+}
+static void file_equals(const char *path, const char *expected) {
+    char *actual = read_file(path);
+    assert(!strcmp(actual, expected));
+    free(actual);
+}
+static void companion_transaction(const char *path) {
+    char companion[1024], staged[1024], backup[1060], error[256];
+    snprintf(companion, sizeof companion, "%s.layout", path);
+    snprintf(staged, sizeof staged, "%s.staged", path);
+    snprintf(backup, sizeof backup, "%s.previous", companion);
+    remove(companion); remove(staged); remove(backup);
+    Config current = config_editable(), next = current;
+    next.volume = current.volume == 19 ? 29 : 19;
+    strcpy(next.touch_weapon_combo[TOUCH_UNIVERSAL_PROFILE][0], "L+R");
+    next.touch_weapon_combo_pad[TOUCH_UNIVERSAL_PROFILE][0] = PADB_R3;
+    strcpy(next.touch_combo_name[0], "模板连招");
+    write_file(companion, "old common layout\n");
+    write_file(staged, "new common layout\n");
+    assert(config_save_with_companion(&next, staged, companion, error, sizeof error));
+    assert(config_editable().volume == next.volume);
+    assert(fabsf(config_audio_gain() - next.volume / 100.0f) < 0.001f);
+    file_equals(companion, "new common layout\n");
+    assert(!fopen(staged, "rb") && !fopen(backup, "rb"));
+    g_config = config_defaults(); config_load();
+    Config persisted = config_editable();
+    assert(persisted.volume == next.volume);
+    assert(!strcmp(persisted.touch_combo_name[0], "模板连招"));
+    assert(!strcmp(persisted.touch_weapon_combo[TOUCH_UNIVERSAL_PROFILE][0], "L+R"));
+    assert(persisted.touch_weapon_combo_pad[TOUCH_UNIVERSAL_PROFILE][0] == PADB_R3);
+    char *ini_before = read_file(path);
+    next.volume = current.volume;
+    strcpy(next.touch_combo_name[0], "不应写入");
+
+    // A missing staged layout and a retained recovery backup both fail closed.
+    assert(!config_save_with_companion(&next, staged, companion, error, sizeof error));
+    file_equals(companion, "new common layout\n");
+    file_equals(path, ini_before);
+    write_file(staged, "candidate layout\n");
+    write_file(backup, "recoverable previous layout\n");
+    assert(!config_save_with_companion(&next, staged, companion, error, sizeof error));
+    file_equals(companion, "new common layout\n");
+    file_equals(staged, "candidate layout\n");
+    file_equals(backup, "recoverable previous layout\n");
+    file_equals(path, ini_before);
+    remove(backup);
+    // Invalid settings and overlapping destinations may not consume the staged layout.
+    Config invalid = next; invalid.volume = 101;
+    assert(!config_save_with_companion(&invalid, staged, companion, error, sizeof error));
+    assert(!config_save_with_companion(&next, companion, companion, error, sizeof error));
+    assert(!config_save_with_companion(&next, staged, path, error, sizeof error));
+    assert(!config_save_with_companion(&next, NULL, companion, error, sizeof error));
+    file_equals(staged, "candidate layout\n");
+    file_equals(companion, "new common layout\n");
+    file_equals(path, ini_before);
+#ifdef _WIN32
+    // Deny only deletion of the INI: both layout moves succeed, then the final INI rename fails.
+    // This exercises real rollback with the actual Windows filesystem, without production hooks.
+    HANDLE locked = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    assert(locked != INVALID_HANDLE_VALUE);
+    assert(!config_save_with_companion(&next, staged, companion, error, sizeof error));
+    assert(CloseHandle(locked));
+    file_equals(companion, "new common layout\n");
+    file_equals(path, ini_before);
+    assert(!fopen(backup, "rb"));
+    assert(config_editable().volume == persisted.volume);
+    assert(fabsf(config_audio_gain() - persisted.volume / 100.0f) < 0.001f);
+    char live_name[TOUCH_COMBO_NAME_MAX];
+    config_live_touch_combo_name(0, live_name, sizeof live_name);
+    assert(!strcmp(live_name, "模板连招"));
+
+    // On the first layout save there is no old file: failed INI commit removes the installed candidate.
+    remove(companion);
+    write_file(staged, "first common layout\n");
+    locked = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                        NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    assert(locked != INVALID_HANDLE_VALUE);
+    assert(!config_save_with_companion(&next, staged, companion, error, sizeof error));
+    assert(CloseHandle(locked));
+    assert(!fopen(companion, "rb") && !fopen(backup, "rb"));
+    file_equals(path, ini_before);
+    assert(config_editable().volume == persisted.volume);
+#endif
+    remove(companion); remove(staged); remove(backup); free(ini_before);
+    puts("PASS: real settings/layout companion transaction, persisted combos/names, missing input, retained recovery backup, invalid paths/settings and failed final INI commit keep prior files and live configuration");
 }
 static void universal_combo_roundtrip(const char *path) {
     FILE *f = fopen(path, "wb"); assert(f);
@@ -39,6 +130,7 @@ static void universal_combo_roundtrip(const char *path) {
         assert(migrated.touch_weapon_combo_pad[TOUCH_UNIVERSAL_PROFILE][i] == (i == 1 ? PADB_NONE : PADB_L3));
     }
     const char *const combos[TOUCH_COMBOS] = {"L+R", "X+A", "ZL+ZR", "L+X", "R+A", "Plus+Minus"};
+    const char *const names[TOUCH_COMBOS] = {"蓄力射击", "大剑连招", "翻滚防御", "狩技切换", "R+A 连击", "菜单组合"};
     Config edited = migrated;
     for (int i = 0; i < TOUCH_COMBOS; i++) {
         char key[32];
@@ -48,6 +140,9 @@ static void universal_combo_roundtrip(const char *path) {
         snprintf(key, sizeof key, "UniversalCombo%dPad", i + 1);
         assert(config_setting(key));
         edited.touch_weapon_combo_pad[TOUCH_UNIVERSAL_PROFILE][i] = PADB_L3 + i;
+        snprintf(key, sizeof key, "Combo%dName", i + 1);
+        const ConfigSetting *name = config_setting(key);
+        assert(name && !config_restart_key(key) && config_parse(name, names[i], &edited));
     }
     char error[256];
     assert(config_save(&edited, error, sizeof error));
@@ -56,6 +151,9 @@ static void universal_combo_roundtrip(const char *path) {
     for (int i = 0; i < TOUCH_COMBOS; i++) {
         assert(config_live_touch_combo(TOUCH_UNIVERSAL_PROFILE, i) == config_combo_mask(combos[i]));
         assert(config_live_touch_combo_pad(TOUCH_UNIVERSAL_PROFILE, i) == PADB_L3 + i);
+        char name[TOUCH_COMBO_NAME_MAX];
+        config_live_touch_combo_name(i, name, sizeof name);
+        assert(!strcmp(name, names[i]));
     }
     g_config = config_defaults(); config_load();
     Config loaded = config_editable();
@@ -69,13 +167,77 @@ static void universal_combo_roundtrip(const char *path) {
                    TOUCH_UNIVERSAL_PROFILE * sizeof loaded.touch_weapon_combo_pad[0]));
     assert(!memcmp(loaded.touch_combo, migrated.touch_combo, sizeof loaded.touch_combo));
     assert(!memcmp(loaded.touch_combo_pad, migrated.touch_combo_pad, sizeof loaded.touch_combo_pad));
+    assert(!memcmp(loaded.touch_combo_name, edited.touch_combo_name, sizeof loaded.touch_combo_name));
+    char *saved = read_file(path);
+    assert(strstr(saved, "Combo1Name = 蓄力射击") && strstr(saved, "Combo6Name = 菜单组合"));
+    free(saved);
+    // Invalid display names never replace the saved file or the published live value.
+    const char *const invalid[] = {"name\nFPS=30", "name\rnext", "name;comment", "name#comment"};
+    for (size_t i = 0; i < sizeof invalid / sizeof *invalid; i++) {
+        Config bad = loaded;
+        strcpy(bad.touch_combo_name[0], invalid[i]);
+        assert(!config_save(&bad, error, sizeof error));
+        char name[TOUCH_COMBO_NAME_MAX];
+        config_live_touch_combo_name(0, name, sizeof name);
+        assert(!strcmp(name, names[0]));
+    }
+    // A bounded UTF-8 read never emits a partial Chinese character.
+    char short_name[6] = {'x', 'x', 'x', 'x', 'x', 'x'};
+    config_live_touch_combo_name(0, short_name, sizeof short_name);
+    assert(!strcmp(short_name, "蓄"));
+    char untouched = 'x';
+    config_live_touch_combo_name(0, &untouched, 0);
+    assert(untouched == 'x');
+    config_live_touch_combo_name(-1, short_name, sizeof short_name);
+    assert(!*short_name);
+    config_live_touch_combo_name(TOUCH_COMBOS, short_name, sizeof short_name);
+    assert(!*short_name);
+    Config bounded = loaded;
+    char maximum[TOUCH_COMBO_NAME_MAX];
+    memset(maximum, 'x', sizeof maximum - 1); maximum[sizeof maximum - 1] = 0;
+    assert(config_parse(config_setting("Combo1Name"), maximum, &bounded));
+    assert(config_save(&bounded, error, sizeof error));
+    char multibyte[96];
+    for (int i = 0; i < 30; i++) memcpy(multibyte + i * 3, "蓄", 3);
+    multibyte[90] = 0;
+    assert(config_parse(config_setting("Combo1Name"), multibyte, &bounded));
+    assert(strlen(bounded.touch_combo_name[0]) == 63);
+    assert(config_save(&bounded, error, sizeof error));
+    loaded = bounded;
     loaded.touch_weapon_combo[TOUCH_UNIVERSAL_PROFILE][1][0] = 0;
     loaded.touch_weapon_combo_pad[TOUCH_UNIVERSAL_PROFILE][1] = PADB_NONE;
+    loaded.touch_combo_name[1][0] = 0;
+    strcpy(loaded.touch_combo_name[2], "   ");
     assert(config_save(&loaded, error, sizeof error));
     g_config = config_defaults(); config_load();
     assert(!config_live_touch_combo(TOUCH_UNIVERSAL_PROFILE, 1));
     assert(config_live_touch_combo_pad(TOUCH_UNIVERSAL_PROFILE, 1) == PADB_NONE);
-    puts("PASS: all six universal combos and controller bindings migrate missing legacy defaults, preserve explicit empty values, save/reload independently and keep every existing profile unchanged.");
+    config_live_touch_combo_name(1, short_name, sizeof short_name);
+    assert(!*short_name);
+    config_live_touch_combo_name(2, short_name, sizeof short_name);
+    assert(!*short_name);
+    puts("PASS: six universal combos, controller mappings and UTF-8 names round-trip independently; blank names fall back, invalid names keep live data, bounded reads preserve UTF-8, and every legacy profile stays unchanged.");
+}
+static void combo_text_bounds(void) {
+    char full[128];
+    config_combo_text(0xffff, full, sizeof full);
+    assert(config_combo_mask(full) == 0xffff);
+    config_combo_text(0xffff, NULL, 0);
+    config_combo_text(0xffff, NULL, 8);
+    for (size_t size = 0; size <= strlen(full) + 2; size++) {
+        char bounded[128];
+        memset(bounded, '!', sizeof bounded);
+        config_combo_text(0xffff, bounded, size);
+        assert(bounded[size] == '!');
+        if (!size) { assert(bounded[0] == '!'); continue; }
+        assert(memchr(bounded, 0, size));
+        const size_t length = strlen(bounded);
+        assert(!length || bounded[length - 1] != '+');
+        char restored[128];
+        config_combo_text(config_combo_mask(bounded), restored, sizeof restored);
+        assert(!strcmp(bounded, restored)); // A short buffer contains complete button names only.
+    }
+    puts("PASS: combined-button text handles null/zero buffers and every output capacity without overflow or partial tokens");
 }
 int main(int argc, char **argv) {
     assert(argc == 2);
@@ -245,7 +407,7 @@ int main(int argc, char **argv) {
     assert(config_help("Server", help, sizeof help) && strstr(help, " and Search Hubs shows") && !strstr(help, "Default"));
     assert(config_help("Key", help, sizeof help) && !strncmp(help, "Matchmaking key:", 16));
     assert(config_help("DrawDistance", help, sizeof help) && strstr(help, "twice as far, 0.5 half") && strstr(help, "\nBetween 0"));
-    assert(config_help("AutoR", help, sizeof help) && strstr(help, "manual R unchanged") && strstr(help, "Default: On"));
+    assert(config_help("AutoR", help, sizeof help) && strstr(help, "never presses R automatically") && strstr(help, "Default: On"));
     assert(!config_help("NoSuchKey", help, sizeof help));
     // A second save must not append duplicate sections or change resolved Auto settings.
     assert(config_save(&loaded, error, sizeof error));
@@ -429,6 +591,8 @@ int main(int argc, char **argv) {
     bad = voice_loaded; bad.noise_suppression = 2;
     assert(!config_save(&bad, error, sizeof error) && config_voice_noise());
     universal_combo_roundtrip(path);
+    companion_transaction(path);
+    combo_text_bounds();
     remove(path);
     puts("PASS: INI round trip, Auto/Desktop, environment overrides, comments/unknown keys, duplicate aliases, quest removal, invalid input, atomic write failure, live volume and English/Spanish/Chinese, icons, hot settings, keybinds and restart classification.");
     return 0;

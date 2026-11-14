@@ -79,45 +79,43 @@ extern "C" void padmap_cancel(void) {}
 extern "C" void padmap_forget(int) {}
 extern "C" void textinput_menu_keyboard(bool) {}
 extern "C" void textinput_menu_reopen(void) {}
-static const char *const preset_names[TOUCH_PRESET_COUNT] = {
-    "Great Sword", "Sword & Shield", "Hammer", "Lance", "Heavy Bowgun", "Light Bowgun", "Long Sword",
-    "Switch Axe", "Gunlance", "Bow", "Dual Blades", "Hunting Horn", "Insect Glaive", "Charge Blade", "Prowler",
-    "Universal (virtual buttons)", "Reserved preset", "Reserved preset", "Reserved preset", "Reserved preset"
-};
-static int preset_bindings[TOUCH_PRESET_COUNT] = {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,-1,-1,-1,-1,-1};
-static int current_preset = -1;
-static int preset_name_queries, preset_binding_queries, preset_current_queries, edit_target = -1, edit_cancelled;
-static bool preset_use_ok = true;
-struct PresetUse { int preset, weapon; };
-static std::vector<PresetUse> preset_uses;
-extern "C" const char *touch_preset_name(int preset) {
-    ++preset_name_queries;
-    assert(preset >= 0 && preset < TOUCH_PRESET_COUNT);
-    return preset_names[preset];
-}
-extern "C" int touch_preset_binding(int preset) {
-    ++preset_binding_queries;
-    assert(preset >= 0 && preset < TOUCH_PRESET_COUNT);
-    return preset_bindings[preset];
-}
-extern "C" int touch_preset_current(void) {
-    ++preset_current_queries;
-    return current_preset;
-}
-extern "C" bool touch_preset_use(int preset, int weapon) {
-    assert(preset >= 0 && preset < TOUCH_PRESET_COUNT);
-    preset_uses.push_back({preset, weapon});
-    if (!preset_use_ok) return false;
-    if (preset > TOUCH_UNIVERSAL_PRESET && weapon >= 0) preset_bindings[preset] = weapon;
-    if (preset > TOUCH_UNIVERSAL_PRESET) {
-        int bound = preset_bindings[preset];
-        if (bound < 0 || bound >= TOUCH_UNIVERSAL_PRESET) return false;
-    }
-    current_preset = preset;
+struct TemplateFixture { std::string name; Config combo; };
+static TemplateFixture templates[TOUCH_TEMPLATE_COUNT];
+static int template_info_queries, edit_target = -1, edit_cancelled;
+static bool template_use_ok = true, template_save_ok = true;
+static std::vector<int> template_uses, template_saves;
+static std::vector<Config> template_save_settings;
+extern "C" bool touch_template_info(int slot, char *name, int name_size) {
+    ++template_info_queries;
+    assert(slot >= 0 && slot < TOUCH_TEMPLATE_COUNT);
+    if (name && name_size > 0) *name = 0;
+    if (templates[slot].name.empty()) return false;
+    SDL_utf8strlcpy(name, templates[slot].name.c_str(), name_size);
     return true;
 }
+extern "C" bool touch_template_save(int slot, const char *name) {
+    assert(slot >= 0 && slot < TOUCH_TEMPLATE_COUNT);
+    template_saves.push_back(slot);
+    template_save_settings.push_back(config_editable());
+    if (!template_save_ok) return false;
+    templates[slot] = {name, config_editable()};
+    return true;
+}
+extern "C" bool touch_template_use(int slot) {
+    assert(slot >= 0 && slot < TOUCH_TEMPLATE_COUNT);
+    template_uses.push_back(slot);
+    if (!template_use_ok || templates[slot].name.empty()) return false;
+    Config next = config_editable();
+    const Config &from = templates[slot].combo;
+    memcpy(next.touch_weapon_combo[TOUCH_UNIVERSAL_PROFILE], from.touch_weapon_combo[TOUCH_UNIVERSAL_PROFILE],
+           sizeof next.touch_weapon_combo[TOUCH_UNIVERSAL_PROFILE]);
+    memcpy(next.touch_weapon_combo_pad[TOUCH_UNIVERSAL_PROFILE], from.touch_weapon_combo_pad[TOUCH_UNIVERSAL_PROFILE],
+           sizeof next.touch_weapon_combo_pad[TOUCH_UNIVERSAL_PROFILE]);
+    memcpy(next.touch_combo_name, from.touch_combo_name, sizeof next.touch_combo_name);
+    char error[256];
+    return config_save(&next, error, sizeof error);
+}
 extern "C" void touch_edit_begin(void) { edit_target = -2; }
-extern "C" void touch_edit_preset(int preset) { edit_target = preset; }
 extern "C" void touch_edit_cancel(void) { edit_target = -1; ++edit_cancelled; }
 static bool opened = true;
 static void frame() {
@@ -225,215 +223,135 @@ static void forge_menu_regression() {
     frame();
     puts("PASS: Forge menu is reachable with zero plugins, by controller and pointer, without changing settings");
 }
-static void open_presets() {
-    seek_row("touch.presets");
+static void open_templates() {
+    seek_row("touch.templates");
     confirm();
     assert(opened && !settings_panel_confirming());
 }
-static void expect_use(int preset, int weapon, size_t previous) {
-    assert(preset_uses.size() == previous + 1);
-    assert(preset_uses.back().preset == preset && preset_uses.back().weapon == weapon);
-    assert(opened && !settings_panel_confirming());
+static void enter_text(const char *row, const char *value) {
+    seek_row(row);
+    confirm();
+    seek_row("key.clear");
+    confirm();
+    ImGui::GetIO().AddInputCharactersUTF8(value);
+    idle();
+    seek_row("key.accept");
+    confirm();
+    assert(focused_row(row));
 }
-static void preset_regression() {
+static void assert_combo_snapshot(const Config &expected) {
+    const Config actual = config_editable();
+    assert(!memcmp(actual.touch_weapon_combo[TOUCH_UNIVERSAL_PROFILE],
+                   expected.touch_weapon_combo[TOUCH_UNIVERSAL_PROFILE],
+                   sizeof actual.touch_weapon_combo[TOUCH_UNIVERSAL_PROFILE]));
+    assert(!memcmp(actual.touch_weapon_combo_pad[TOUCH_UNIVERSAL_PROFILE],
+                   expected.touch_weapon_combo_pad[TOUCH_UNIVERSAL_PROFILE],
+                   sizeof actual.touch_weapon_combo_pad[TOUCH_UNIVERSAL_PROFILE]));
+    assert(!memcmp(actual.touch_combo_name, expected.touch_combo_name, sizeof actual.touch_combo_name));
+}
+static void template_regression() {
+    static_assert(TOUCH_TEMPLATE_COUNT == 20, "The shared layout has twenty independent snapshots");
+    Config fixture = config_editable();
+    for (int slot : {0, 19}) {
+        templates[slot].name = slot ? "远程连招" : "近战通用";
+        templates[slot].combo = fixture;
+        for (int i = 0; i < TOUCH_COMBOS; i++) {
+            strcpy(templates[slot].combo.touch_weapon_combo[TOUCH_UNIVERSAL_PROFILE][i], slot ? "R+A" : "X+A");
+            templates[slot].combo.touch_weapon_combo_pad[TOUCH_UNIVERSAL_PROFILE][i] = slot ? PADB_R3 : PADB_L3;
+            snprintf(templates[slot].combo.touch_combo_name[i], TOUCH_COMBO_NAME_MAX,
+                     slot ? "蓄力组合%d" : "近战组合%d", i + 1);
+        }
+    }
     idle();
     tab();
     tab();
     assert(!settings_panel_dirty());
-    current_preset = 9; // A saved selection must win over the menu's initial/previous edit target.
-    open_presets();
-    assert(preset_name_queries == TOUCH_PRESET_COUNT && preset_binding_queries == TOUCH_PRESET_COUNT);
-    assert(preset_current_queries == 1 && focused_row("tp.9"));
-    int queries = preset_name_queries;
-    int current_queries = preset_current_queries;
+    open_templates();
+    assert(template_info_queries >= TOUCH_TEMPLATE_COUNT);
+    const int queries = template_info_queries;
     idle(20);
-    assert(preset_name_queries == queries && preset_binding_queries == queries && preset_current_queries == current_queries);
-    for (int i = 0; i < TOUCH_PRESET_COUNT; i++) {
-        std::string row = "tp." + std::to_string(i);
+    assert(template_info_queries == queries); // No disk queries on every rendered frame.
+    for (int slot = 0; slot < TOUCH_TEMPLATE_COUNT; slot++) {
+        std::string row = "tp." + std::to_string(slot);
         seek_row(row.c_str());
+        if (slot % 2) click_focused_row(); else confirm();
+        assert(template_uses.empty() && template_saves.empty());
     }
-    assert(preset_uses.empty()); // Moving focus never applies a preset.
-    seek_row("tp.0");
-    click_focused_row();
-    expect_use(0, -1, 0);
-    assert(current_preset == 0);
-    seek_row("tp.14");
+    seek_row("tp.1");
     confirm();
-    expect_use(14, -1, 1);
-    assert(current_preset == 14);
-    seek_row("tp.15");
-    click_focused_row();
-    expect_use(TOUCH_UNIVERSAL_PRESET, -1, 2);
-    assert(current_preset == TOUCH_UNIVERSAL_PRESET);
-    assert(!settings_panel_dirty()); // Direct use needs no settings Save.
-    queries = preset_name_queries;
-    current_queries = preset_current_queries;
-    idle(20);
-    assert(preset_name_queries == queries && preset_binding_queries == queries && preset_current_queries == current_queries);
-    size_t used = preset_uses.size();
-    seek_row("tp.16");
+    enter_text("tp.name", "我的中文模板");
+    seek_row("tp.save");
     confirm();
-    assert(preset_uses.size() == used && focused_row("tp.bind"));
-    assert(current_preset == TOUCH_UNIVERSAL_PRESET && preset_current_queries == current_queries);
+    assert(template_saves.size() == 1 && template_saves.back() == 1);
+    assert(templates[1].name == "我的中文模板" && !settings_panel_dirty());
+    seek_row("tp.save");
     confirm();
-    assert(focused_row("choice.0"));
-    confirm(); // Choosing the already highlighted first base must still initialize and apply.
-    expect_use(16, 0, used);
-    assert(preset_bindings[16] == 0 && current_preset == 16);
-    used = preset_uses.size();
-    seek_row("tp.16");
-    click_focused_row();
-    expect_use(16, -1, used);
-    assert(preset_bindings[16] == 0 && current_preset == 16); // A saved slot is used without copying its base again.
-    for (int preset = 17; preset < TOUCH_PRESET_COUNT; preset++) {
-        used = preset_uses.size();
-        std::string row = "tp." + std::to_string(preset);
-        seek_row(row.c_str());
-        confirm();
-        assert(preset_uses.size() == used && focused_row("tp.bind"));
-        confirm();
-        seek_row("choice.14");
-        confirm();
-        expect_use(preset, 14, used);
-        assert(preset_bindings[preset] == 14 && current_preset == preset);
-    }
-    used = preset_uses.size();
-    seek_row("tp.bind");
-    confirm();
-    seek_row("choice.6");
-    confirm();
-    expect_use(19, 6, used);
-    assert(preset_bindings[19] == 6 && current_preset == 19);
-    seek_row("tp.0");
-    preset_use_ok = false;
-    used = preset_uses.size();
-    queries = preset_name_queries;
-    current_queries = preset_current_queries;
-    confirm();
-    expect_use(0, -1, used);
-    assert(current_preset == 19 && preset_name_queries == queries && preset_binding_queries == queries &&
-           preset_current_queries == current_queries);
-    settings_panel_before_frame(opened);
-    ImGui::NewFrame();
-    ImGui::LogToBuffer();
-    settings_panel(&opened);
-    assert(strstr(ImGui::GetCurrentContext()->LogBuffer.c_str(), "Could not apply this preset."));
-    ImGui::LogFinish();
-    ImGui::Render();
-    preset_use_ok = true;
-    seek_row("tp.edit");
-    confirm();
-    assert(!opened && edit_target == 0 && current_preset == 19); // Edit target and current selection are separate.
-    frame();
-    opened = true;
-    idle();
-    open_presets();
-    assert(focused_row("tp.19") && current_preset == 19); // Re-entry follows runtime, including after a failed use.
-    seek_row("tp.15");
-    confirm();
-    seek_row("tp.edit");
-    click_focused_row();
-    assert(!opened && edit_target == 15); // Editing closes the whole overlay from this subpage.
-    frame();
-    opened = true;
-    idle();
-    seek_row("touch.hud");
-    confirm();
-    assert(settings_panel_dirty());
-    open_presets();
-    seek_row("tp.edit");
-    confirm();
-    assert(opened && settings_panel_confirming() && edit_target == 15);
-    int cancelled = edit_cancelled;
-    confirm(); // Cancel is the dialog's default.
-    assert(opened && !settings_panel_confirming() && edit_target == -1 && edit_cancelled == cancelled + 1 && current_preset == 15);
-    assert(focused_row("tp.edit"));
+    assert(settings_panel_confirming() && template_saves.size() == 1);
+    confirm(); // Cancel is the safe initial choice for an existing template.
+    assert(!settings_panel_confirming() && template_saves.size() == 1);
     confirm();
     assert(settings_panel_confirming());
     back();
-    assert(opened && !settings_panel_confirming() && edit_target == -1 && edit_cancelled == cancelled + 2 && current_preset == 15);
+    assert(!settings_panel_confirming() && template_saves.size() == 1);
+    confirm();
+    seek_row("dialog.apply");
+    confirm();
+    assert(template_saves.size() == 2 && template_saves.back() == 1);
+    assert(templates[0].name == "近战通用" && templates[19].name == "远程连招");
+
+    seek_row("tp.0");
+    confirm();
+    seek_row("tp.use");
+    click_focused_row();
+    assert(template_uses.size() == 1 && template_uses.back() == 0);
+    assert_combo_snapshot(templates[0].combo);
+    assert(!settings_panel_dirty()); // Applying must replace saved and draft together.
+    back();
+    seek_row("touch.hud");
+    confirm();
+    const int original_hud = config_editable().touch_hud;
+    assert(settings_panel_dirty());
+    open_templates();
+    seek_row("tp.19");
+    confirm();
+    seek_row("tp.use");
+    confirm();
+    assert(settings_panel_confirming() && template_uses.size() == 1);
+    confirm();
+    assert(!settings_panel_confirming() && settings_panel_dirty() && template_uses.size() == 1);
+    confirm();
+    back();
+    assert(!settings_panel_confirming() && template_uses.size() == 1);
     confirm();
     seek_row("dialog.discard");
     confirm();
-    assert(!opened && edit_target == 15 && current_preset == 15);
-    frame();
-    opened = true;
-    idle();
+    assert(template_uses.size() == 2 && template_uses.back() == 19);
+    assert(config_editable().touch_hud == original_hud && !settings_panel_dirty());
+    assert_combo_snapshot(templates[19].combo);
+
+    back();
     seek_row("touch.hud");
     confirm();
-    assert(settings_panel_dirty());
-    open_presets();
-    seek_row("tp.5");
+    open_templates();
+    seek_row("tp.0");
     confirm();
-    seek_row("tp.edit");
+    seek_row("tp.use");
     confirm();
-    assert(settings_panel_confirming() && edit_target == 5);
     seek_row("dialog.save");
     confirm();
-    assert(!opened && edit_target == 5 && current_preset == 5);
-    frame();
-    assert(!settings_panel_dirty());
-    puts("PASS: real settings-panel ImGui loop: 20 directly usable presets; saved/current selection and edit target stay separate across failure and re-entry; reserved initialization and explicit base changes; cached current/name/base queries; exact editor and Save/Discard/Cancel/Back (host stubs, no Android/game execution)");
-}
-static void combo_layout_regression() {
-    static_assert(TOUCH_WEAPON_LAYOUTS == 15 && TOUCH_LEGACY_LAYOUTS == 4 &&
-                  TOUCH_UNIVERSAL_PROFILE == 19 && TOUCH_LAYOUT_PROFILES == 20,
-                  "The universal profile must be appended without renumbering saved combo profiles");
-    Config fixture = config_editable();
-    memset(fixture.touch_weapon_combo, 0, sizeof fixture.touch_weapon_combo);
-    memset(fixture.touch_weapon_combo_pad, 0, sizeof fixture.touch_weapon_combo_pad);
-    strcpy(fixture.touch_weapon_combo[15][0], "L+ZL");
-    strcpy(fixture.touch_weapon_combo[17][0], "R+ZR");
-    fixture.touch_weapon_combo_pad[15][0] = PADB_L3;
-    fixture.touch_weapon_combo_pad[17][0] = PADB_R3;
-    config_store_loaded(&fixture);
-    config_runtime_init(&fixture);
-    config_set_touch_profile(15); // A retired saved selection falls back to Melee layout 2.
-    opened = true;
-    idle();
+    assert(template_uses.size() == 3 && template_uses.back() == 0);
+    assert(config_editable().touch_hud == !original_hud && !settings_panel_dirty());
+    assert_combo_snapshot(templates[0].combo);
+    // Saving an unsaved settings edit resolves the draft before taking the snapshot.
+    back();
+    seek_row("touch.hud");
+    confirm();
     seek_row("touch.buttons");
     confirm();
     seek_row("tc.0");
     confirm();
-    seek_row("ce.weapon");
-    confirm();
-    assert(focused_row("choice.15"));
-    press(ImGuiKey_End);
-    assert(focused_row("choice.17")); // 15 weapons, two surviving general layouts and the independent universal layout.
-    seek_row("choice.15");
-    confirm();
-    seek_row("ce.0");
-    confirm();
-    seek_row("ce.pad");
-    confirm();
-    seek_row("choice.1");
-    confirm();
-    seek_row("ce.weapon");
-    confirm();
-    seek_row("choice.16");
-    confirm();
+    enter_text("ce.name", "保存前新连招");
     seek_row("ce.1");
-    confirm();
-    seek_row("ce.pad");
-    confirm();
-    seek_row("choice.2");
-    confirm();
-    for (int weapon = 0; weapon < TOUCH_WEAPON_LAYOUTS; weapon++) {
-        seek_row("ce.weapon");
-        confirm();
-        std::string row = "choice." + std::to_string(weapon);
-        seek_row(row.c_str());
-        confirm();
-        seek_row("ce.0");
-        confirm();
-    }
-    seek_row("ce.weapon");
-    confirm();
-    seek_row("choice.17");
-    confirm();
-    seek_row("ce.2");
-    confirm();
-    seek_row("ce.0");
     confirm();
     seek_row("ce.pad");
     confirm();
@@ -441,59 +359,158 @@ static void combo_layout_regression() {
     confirm();
     back();
     back();
-    seek_row("save");
+    open_templates();
+    seek_row("tp.2");
     confirm();
-    assert(!settings_panel_dirty());
-    Config saved = config_editable();
-    for (int weapon = 0; weapon < TOUCH_WEAPON_LAYOUTS; weapon++)
-        assert(config_combo_mask(saved.touch_weapon_combo[weapon][0]) == config_combo_mask("A"));
-    assert(config_combo_mask(saved.touch_weapon_combo[16][0]) == config_combo_mask("A"));
-    assert(saved.touch_weapon_combo_pad[16][0] == PADB_L3);
-    assert(config_combo_mask(saved.touch_weapon_combo[18][0]) == config_combo_mask("B"));
-    assert(saved.touch_weapon_combo_pad[18][0] == PADB_R3);
-    assert(config_combo_mask(saved.touch_weapon_combo[TOUCH_UNIVERSAL_PROFILE][0]) == config_combo_mask("X+A"));
-    assert(saved.touch_weapon_combo_pad[TOUCH_UNIVERSAL_PROFILE][0] == PADB_MINUS);
-    for (int retired : {15, 17}) {
-        assert(!memcmp(saved.touch_weapon_combo[retired], fixture.touch_weapon_combo[retired],
-                       sizeof saved.touch_weapon_combo[retired]));
-        assert(!memcmp(saved.touch_weapon_combo_pad[retired], fixture.touch_weapon_combo_pad[retired],
-                       sizeof saved.touch_weapon_combo_pad[retired]));
-    }
-    opened = false;
-    frame();
-    config_set_touch_profile(17);
-    opened = true;
-    idle();
-    seek_row("touch.buttons");
+    enter_text("tp.name", "保留设置");
+    seek_row("tp.save");
     confirm();
-    seek_row("tc.0");
+    assert(settings_panel_confirming());
+    seek_row("dialog.save");
     confirm();
-    seek_row("ce.weapon");
+    assert(template_saves.size() == 3 && template_saves.back() == 2);
+    assert(template_save_settings.back().touch_hud == original_hud && !settings_panel_dirty());
+    assert(!strcmp(template_save_settings.back().touch_combo_name[0], "保存前新连招"));
+    assert(config_combo_mask(template_save_settings.back().touch_weapon_combo[TOUCH_UNIVERSAL_PROFILE][0]) ==
+           config_combo_mask("X+A+B"));
+    assert(template_save_settings.back().touch_weapon_combo_pad[TOUCH_UNIVERSAL_PROFILE][0] == PADB_MINUS);
+    assert_combo_snapshot(templates[2].combo);
+
+    // Failed template operations leave the current common configuration intact.
+    const Config before_failure = config_editable();
+    template_use_ok = false;
+    seek_row("tp.19");
     confirm();
-    assert(focused_row("choice.15"));
+    seek_row("tp.use");
+    confirm();
+    assert(template_uses.size() == 4 && template_uses.back() == 19);
+    assert(!settings_panel_dirty() && !settings_panel_confirming());
+    assert_combo_snapshot(before_failure);
+    template_use_ok = true;
+    template_save_ok = false;
+    seek_row("tp.3");
+    confirm();
+    enter_text("tp.name", "写入失败");
+    seek_row("tp.save");
+    confirm();
+    assert(template_saves.size() == 4 && templates[3].name.empty());
+    template_save_ok = true;
+    // Failed settings Save must not reach the template use callback.
     back();
-    assert(!settings_panel_dirty()); // Merely opening a retired profile never overwrites its old data.
+    seek_row("touch.hud");
+    confirm();
+    open_templates();
+    seek_row("tp.0");
+    confirm();
+    seek_row("tp.use");
+    confirm();
+#ifdef _WIN32
+    _putenv_s("MHGU_CONFIG", "missing-settings-parent/panel.ini");
+#else
+    setenv("MHGU_CONFIG", "missing-settings-parent/panel.ini", 1);
+#endif
+    seek_row("dialog.save");
+    confirm();
+    assert(settings_panel_confirming() && settings_panel_dirty() && template_uses.size() == 4);
+#ifdef _WIN32
+    _putenv_s("MHGU_CONFIG", "obj/settings-test/panel-settings.ini");
+#else
+    setenv("MHGU_CONFIG", "obj/settings-test/panel-settings.ini", 1);
+#endif
+    seek_row("dialog.discard");
+    confirm();
+    assert(template_uses.size() == 5 && !settings_panel_dirty());
+    back();
     opened = false;
     frame();
-    config_set_touch_profile(TOUCH_UNIVERSAL_PROFILE);
+    puts("PASS: real settings-panel ImGui loop: twenty independent template slots, Chinese naming, explicit Save/Use, overwrite confirmation, draft Save/Discard/Cancel/Back, failure retention and combo snapshot refresh (touch API stubs; no Android/game execution)");
+}
+static void combo_layout_regression() {
+    static_assert(TOUCH_UNIVERSAL_PROFILE == 19 && TOUCH_LAYOUT_PROFILES == 20,
+                  "The common combo profile must not renumber legacy profiles");
+    Config fixture = config_editable();
+    for (int profile = 0; profile < TOUCH_UNIVERSAL_PROFILE; profile++) {
+        strcpy(fixture.touch_weapon_combo[profile][0], "L+ZL");
+        fixture.touch_weapon_combo_pad[profile][0] = PADB_L3;
+    }
+    memset(fixture.touch_weapon_combo[TOUCH_UNIVERSAL_PROFILE], 0, sizeof fixture.touch_weapon_combo[TOUCH_UNIVERSAL_PROFILE]);
+    memset(fixture.touch_weapon_combo_pad[TOUCH_UNIVERSAL_PROFILE], 0, sizeof fixture.touch_weapon_combo_pad[TOUCH_UNIVERSAL_PROFILE]);
+    memset(fixture.touch_combo_name, 0, sizeof fixture.touch_combo_name);
+    config_store_loaded(&fixture);
+    config_runtime_init(&fixture);
+    config_set_touch_profile(17); // Legacy runtime selections must never redirect the common editor.
     opened = true;
     idle();
     seek_row("touch.buttons");
     confirm();
     for (int k = 0; k < TOUCH_COMBOS; k++) {
-        std::string row = "tc." + std::to_string(k);
+        const std::string row = "tc." + std::to_string(k);
         seek_row(row.c_str());
         confirm();
-        seek_row("ce.weapon");
+        press(ImGuiKey_Home);
+        assert(focused_row("ce.name")); // No weapon/layout selector remains.
+        const std::string name = "中文连招" + std::to_string(k + 1);
+        enter_text("ce.name", name.c_str());
+        seek_row("ce.0");
         confirm();
-        assert(focused_row("choice.17"));
-        back();
+        seek_row("ce.2");
+        confirm();
+        seek_row("ce.pad");
+        confirm();
+        const std::string pad = "choice." + std::to_string(k + 1);
+        seek_row(pad.c_str());
+        confirm();
         back();
     }
+    back();
+    seek_row("save");
+    confirm();
+    assert(!settings_panel_dirty());
+    const Config saved = config_editable();
+    for (int k = 0; k < TOUCH_COMBOS; k++) {
+        assert(config_combo_mask(saved.touch_weapon_combo[TOUCH_UNIVERSAL_PROFILE][k]) == config_combo_mask("X+A"));
+        assert(saved.touch_weapon_combo_pad[TOUCH_UNIVERSAL_PROFILE][k] == k + 1);
+        const std::string name = "中文连招" + std::to_string(k + 1);
+        assert(name == saved.touch_combo_name[k]);
+        char published[TOUCH_COMBO_NAME_MAX];
+        config_live_touch_combo_name(k, published, sizeof published);
+        assert(name == published);
+    }
+    assert(!memcmp(saved.touch_weapon_combo, fixture.touch_weapon_combo,
+                   TOUCH_UNIVERSAL_PROFILE * sizeof saved.touch_weapon_combo[0]));
+    assert(!memcmp(saved.touch_weapon_combo_pad, fixture.touch_weapon_combo_pad,
+                   TOUCH_UNIVERSAL_PROFILE * sizeof saved.touch_weapon_combo_pad[0]));
+    assert(!memcmp(saved.touch_combo, fixture.touch_combo, sizeof saved.touch_combo));
+    assert(!memcmp(saved.touch_combo_pad, fixture.touch_combo_pad, sizeof saved.touch_combo_pad));
+    // Request all sixteen buttons through the real editor: over-capacity choices must not truncate a token.
+    seek_row("touch.buttons");
+    confirm();
+    seek_row("tc.0");
+    confirm();
+    static const int order[16] = {0, 1, 2, 3, 6, 7, 8, 9, 10, 11, 13, 15, 12, 14, 4, 5};
+    uint32_t expected = config_combo_mask("X+A");
+    int refused = 0;
+    for (int n = 0; n < 16; n++) {
+        const std::string row = "ce." + std::to_string(n);
+        seek_row(row.c_str());
+        char candidate[128];
+        config_combo_text(expected | (1u << order[n]), candidate, sizeof candidate);
+        if (strlen(candidate) < sizeof saved.touch_weapon_combo[0][0]) expected |= 1u << order[n];
+        else ++refused;
+        press(ImGuiKey_GamepadDpadRight);
+    }
+    assert(refused > 0);
+    back();
+    back();
+    seek_row("save");
+    confirm();
+    const Config bounded = config_editable();
+    assert(config_combo_mask(bounded.touch_weapon_combo[TOUCH_UNIVERSAL_PROFILE][0]) == expected);
+    assert(!strcmp(bounded.touch_combo_name[0], saved.touch_combo_name[0]));
     assert(!settings_panel_dirty());
     opened = false;
     frame();
-    puts("PASS: real settings-panel combo selector: 15 unchanged weapons, general profiles 16/18 and six independent universal combos at profile 19; retired profiles 15/17 preserved and safely defaulted (host stubs)");
+    puts("PASS: all six common combos accept Chinese names and independent controller mappings through the real UI; legacy weapon/layout bindings remain unchanged and there is no weapon selector");
 }
 static void touch_button_rows_regression() {
     for (int legacy_aim = 0; legacy_aim < 2; legacy_aim++) {
@@ -510,7 +527,8 @@ static void touch_button_rows_regression() {
         confirm();
         seek_row("tb.0");
         for (int i = 0; i < TB_COUNT; i++) {
-            if (i == TB_AIM) continue;
+            if (i == TB_RANGED || i == TB_FIRE || i == TB_SECOND || i == TB_AIM ||
+                i == TB_RSPECIAL || i == TB_AMMO || i == TB_MENU_ZL || i == TB_MENU_ZR) continue;
             const std::string row = "tb." + std::to_string(i);
             assert(focused_row(row.c_str()));
             down();
@@ -533,10 +551,10 @@ static void touch_button_rows_regression() {
         opened = false;
         frame();
     }
-    puts("PASS: real touch-button rows retain Guard, omit Aim, and save Guard without changing either legacy ShowAim value or other touch visibility settings");
+    puts("PASS: common touch-button rows retain Aim (R) and native item arrows, omit retired ranged-only controls, and save the R visibility toggle through legacy ShowGuard without changing other settings");
 }
 // Capture the actual phone-style settings draw lists on the host, not a mockup or an Android/game screenshot.
-static void preset_previews() {
+static void template_previews() {
     assert(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS));
     SDL_Surface *surface = SDL_CreateSurface(640, 360, SDL_PIXELFORMAT_RGBA32);
     assert(surface);
@@ -560,7 +578,13 @@ static void preset_previews() {
     frame();
     io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
     idle();
-    open_presets();
+    for (int slot = 0; slot < TOUCH_TEMPLATE_COUNT; slot++) {
+        templates[slot].name = "自定义模板" + std::to_string(slot + 1);
+        templates[slot].combo = translated;
+    }
+    templates[0].name = "近战通用";
+    templates[19].name = "远程连招";
+    open_templates();
     std::vector<ImTextureData *> textures;
     auto capture = [&](const char *path) {
         idle(8);
@@ -608,11 +632,22 @@ static void preset_previews() {
         assert(SDL_SavePNG(surface, path));
         printf("HOST PREVIEW: %s (640x360, Chinese phone-style settings, actual ImGui draw lists / SDL software renderer; no Android/game execution)\n", path);
     };
-    seek_row("tp.15");
+    seek_row("tp.0");
     confirm();
-    capture("settings-presets-universal-zh-640x360.png");
-    seek_row("tp.edit");
-    capture("settings-presets-edit-zh-640x360.png");
+    capture("settings-common-templates-zh-640x360.png");
+    seek_row("tp.use");
+    capture("settings-template-name-zh-640x360.png");
+    back();
+    seek_row("touch.buttons");
+    confirm();
+    seek_row(("tb." + std::to_string(TB_GUARD)).c_str());
+    capture("settings-aim-r-zh-640x360.png");
+    seek_row("tc.5");
+    capture("settings-combo-names-zh-640x360.png");
+    seek_row("tc.0");
+    confirm();
+    seek_row("ce.name");
+    capture("settings-combo-editor-zh-640x360.png");
     for (ImTextureData *tex : textures) {
         SDL_DestroyTexture((SDL_Texture *)(uintptr_t)tex->TexID);
         tex->SetTexID(ImTextureID_Invalid);
@@ -625,7 +660,7 @@ static void preset_previews() {
     SDL_Quit();
 }
 int main(int argc, char **argv) {
-    const bool touch_presets_only = argc > 1 && !strcmp(argv[1], "--touch-presets");
+    const bool touch_presets_only = argc > 1 && (!strcmp(argv[1], "--touch-templates") || !strcmp(argv[1], "--touch-presets"));
     const bool forge_menu_only = argc > 1 && !strcmp(argv[1], "--forge-menu");
     if (touch_presets_only || forge_menu_only) setvbuf(stdout, nullptr, _IONBF, 0);
 #ifdef _WIN32
@@ -675,10 +710,10 @@ int main(int argc, char **argv) {
         return 0;
     }
     if (touch_presets_only) {
-        preset_regression();
+        template_regression();
         combo_layout_regression();
         touch_button_rows_regression();
-        preset_previews();
+        template_previews();
         ImGui::DestroyContext();
         remove("obj/settings-test/panel-settings.ini");
         return 0;

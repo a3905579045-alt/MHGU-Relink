@@ -128,6 +128,7 @@
     .touch_show = TOUCH_SHOW_DEFAULT,                                                               \
     .touch_combo = {"", "", "", "", "", ""},                                                        \
     .touch_combo_pad = {0, 0, 0, 0, 0, 0},                                                          \
+    .touch_combo_name = {"", "", "", "", "", ""},                                                   \
     /* [Mouse] */                                                                                   \
     .motion_mode = MOTION_OFF,                                                                      \
     .motion_gain = 1.0f,                                                                            \
@@ -528,8 +529,8 @@ static const char DEFAULT_INI[] =
     "; Default: On\n"
     "MoveHUD = On\n"
     "\n"
-    "; Hold R when the movement stick is pushed past its rim while the weapon is sheathed\n"
-    "; Turning this off keeps movement and manual R unchanged\n"
+    "; Legacy option retained for compatibility; the universal layout's stick only moves the hunter\n"
+    "; The universal layout never presses R automatically or turns the camera from the movement stick\n"
     "; Default: On\n"
     "AutoR = On\n"
     "\n"
@@ -537,7 +538,7 @@ static const char DEFAULT_INI[] =
     "; Default: Off\n"
     "FloatingStick = Off\n"
     "\n"
-    "; Which of the game's buttons are on the screen in a hunt. A hunt needs none of those off by default\n"
+    "; Which virtual buttons are shown in the universal layout, in quests and menus\n"
     "ShowAttacks = On\n"
     "ShowDodge = On\n"
     "ShowGuard = On\n"
@@ -552,7 +553,7 @@ static const char DEFAULT_INI[] =
     "ShowR3 = Off\n"
     "ShowStick = On\n"
     "\n"
-    "; With a bow or a bowgun in hand, a layout of their own in a hunt, and which of its buttons show\n"
+    "; Legacy ranged display settings retained for compatibility; the universal layout has no ranged layout\n"
     "ShowRanged = On\n"
     "ShowFire = On\n"
     "ShowSecond = On\n"
@@ -569,17 +570,25 @@ static const char DEFAULT_INI[] =
     "; ComboNPad: a controller's button that does the same: None, L3, R3, Minus, Guide, Misc, Paddle1 to Paddle4, Touchpad\n"
     "Combo1 =\n"
     "Combo1Pad = None\n"
+    "Combo1Name =\n"
     "Combo2 =\n"
     "Combo2Pad = None\n"
+    "Combo2Name =\n"
     "Combo3 =\n"
     "Combo3Pad = None\n"
+    "Combo3Name =\n"
     "Combo4 =\n"
     "Combo4Pad = None\n"
+    "Combo4Name =\n"
     "Combo5 =\n"
     "Combo5Pad = None\n"
+    "Combo5Name =\n"
     "Combo6 =\n"
     "Combo6Pad = None\n"
-    "; Each weapon layout, the universal layout and each legacy layout has its own Combo1..6\n"
+    "Combo6Name =\n"
+    "; ComboNName: a display name; empty uses the combined button names\n"
+    "; The universal layout uses UniversalCombo1..6; other layout keys remain for compatibility\n"
+    "; Custom templates save all six Universal combinations, controller bindings and display names\n"
 #define DEFAULT_LAYOUT_COMBOS(name) \
     name "Combo1 =\n" name "Combo1Pad = None\n" name "Combo2 =\n" name "Combo2Pad = None\n" \
     name "Combo3 =\n" name "Combo3Pad = None\n" name "Combo4 =\n" name "Combo4Pad = None\n" \
@@ -978,6 +987,7 @@ static bool parse_aspect(const char *v, float *out) {
 #define ERR_ASPECT "Aspect ratio must be Auto or between 0.5 and 10."
 #define ERR_VIEW "FOV must be 0.5-2.0 and mouse sensitivity 0.1-10."
 #define ERR_MISC "Invalid frame cap, anti-aliasing, controller, HUD or volume setting."
+#define ERR_COMBO_NAME "Invalid combined button name (one line, no ';' or '#')."
 #define ERR_TOGGLE "Invalid On/Off value."
 #define ERR_FSR "Invalid FSR quality, provider, sharpness or reactive mask."
 #define ERR_NET "Invalid port or Join address list (no newlines, ';' or '#')."
@@ -1104,7 +1114,8 @@ const ConfigSetting g_settings[] = {
     ON_OFF("Touch", "ShowItemArrows", touch_show[TB_ITEM_ARROWS], false),
 #define COMBO(n) {"Touch", "Combo" #n, SET_TEXT, F(touch_combo[n - 1]), sizeof g_config.touch_combo[0], 0, 0, NULL, NULL, false, ERR_MISC}, \
     {"Touch", "Combo" #n "Pad", SET_CHOICE, F(touch_combo_pad[n - 1]), 0, 0, 0, \
-     "None,L3,R3,Minus,Guide,Misc,Paddle1,Paddle2,Paddle3,Paddle4,Touchpad", NULL, false, ERR_MISC}
+     "None,L3,R3,Minus,Guide,Misc,Paddle1,Paddle2,Paddle3,Paddle4,Touchpad", NULL, false, ERR_MISC}, \
+    {"Touch", "Combo" #n "Name", SET_TEXT, F(touch_combo_name[n - 1]), sizeof g_config.touch_combo_name[0], 0, 0, NULL, NULL, false, ERR_COMBO_NAME}
     COMBO(1), COMBO(2), COMBO(3), COMBO(4), COMBO(5), COMBO(6),
 #define WEAPON_COMBO(profile, name, n) {"Touch", name "Combo" #n, SET_TEXT, F(touch_weapon_combo[profile][n - 1]), sizeof g_config.touch_weapon_combo[0][0], 0, 0, NULL, NULL, false, ERR_MISC}, \
     {"Touch", name "Combo" #n "Pad", SET_CHOICE, F(touch_weapon_combo_pad[profile][n - 1]), 0, 0, 0, \
@@ -1327,7 +1338,10 @@ bool config_parse(const ConfigSetting *s, const char *value, Config *c) {
         return parse_size(v, field_int(c, s->field), field_int(c, s->field2));
     case SET_ASPECT: return parse_aspect(v, field_float(s, c));
     case SET_TEXT:  // (as written: host names keep their dashes)
-        snprintf((char *)c + s->field, s->field2, "%s", value);
+        if (s->field >= offsetof(Config, touch_combo_name) &&
+            s->field < offsetof(Config, touch_combo_name) + sizeof c->touch_combo_name)
+            SDL_utf8strlcpy((char *)c + s->field, value, s->field2);
+        else snprintf((char *)c + s->field, s->field2, "%s", value);
         return true;
     case SET_KEYS: return config_parse_keys(value, field_int(c, s->field));
     }

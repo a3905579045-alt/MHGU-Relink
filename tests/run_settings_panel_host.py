@@ -46,11 +46,11 @@ log = build.stdout + build.stderr
 print(log.decode('utf-8', errors='replace'), end='')
 build.check_returncode()
 shutil.copy2(sdl / 'lib/x64/SDL3.dll', output / 'SDL3.dll')
-for suite in ('touch-presets', 'forge-menu'):
+for suite in ('touch-templates', 'forge-menu'):
     result = subprocess.run([str(exe), '--' + suite], env=env, cwd=output, capture_output=True, timeout=90)
     log = result.stdout + result.stderr
     (output / ('settings-panel-' + suite + '.log')).write_bytes(log)
     print(log.decode('utf-8', errors='replace'), end='')
     result.check_returncode()
-print('PASS: focused --touch-presets and --forge-menu suites; real settings_panel.cpp / ImGui loop with host-side touch API stubs.')
+print('PASS: focused --touch-templates and --forge-menu suites; real settings_panel.cpp / ImGui loop with host-side touch API stubs.')
 print('This runner does not run the legacy no-argument suite, an APK, or the game. Logs and host previews:', output)

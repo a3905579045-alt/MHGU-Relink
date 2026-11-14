@@ -1,4 +1,4 @@
-"""Run the native Bow world-guide gate contract against the actual production module."""
+"""Run production Bow hooks plus original ARM32 landing-resource setup/dispatch."""
 from pathlib import Path
 import hashlib
 import json
@@ -8,7 +8,7 @@ import sys
 
 project = Path(__file__).resolve().parents[1]
 workspace = Path(os.environ.get('MHGU_TEST_WORKSPACE', str(Path(__file__).resolve().parents[1])))
-output = workspace / 'analysis' / 'bow-charge-drag-0.2.2-r14-20261113'
+output = workspace / 'analysis' / 'bow-landing-circle-resource-20261114'
 output.mkdir(parents=True, exist_ok=True)
 deps = workspace / 'analysis' / 'host-test-deps'
 report_path = output / 'guide-regression-results.json'
@@ -16,7 +16,8 @@ frozen_inputs = {
     'runtime/hle/weapon.c': '39cc465e98ab1ab52ee5edae8b09e6489a1fd76fea09906b30c2dad3fd9b6f98',
 }
 sources = [*frozen_inputs, 'runtime/hle/mousecam.c', 'tests/test_ranged_input.c',
-           'runtime/hle/bow_reticle.c', 'tests/test_bow_reticle.c', 'tests/run_bow_reticle.py']
+           'runtime/hle/bow_reticle.c', 'tests/test_bow_reticle.c', 'tests/run_bow_reticle.py',
+           'tests/test_bow_resource_native.py']
 
 
 def digests():
@@ -25,7 +26,7 @@ def digests():
 
 before = digests()
 report = {
-    'contract': 'bow-charge-guide-v1',
+    'contract': 'bow-charge-world-guides-v3',
     'passed': False,
     'baseline_failed_expected': False,
     'source_frozen': False,
@@ -33,11 +34,11 @@ report = {
     'source_root': str(project),
     'source_sha256': before,
     'logs': {},
-    'method': 'Host regression of production world-guide visibility hook and weapon resolver with synthetic guest memory; native charge predicate fixture from local static guest evidence',
+    'method': 'Host regression of production visibility/resource-style hooks, followed by bounded original ARM32 resource setup and selected slot-2 dispatch using the actual C-hook outputs',
     'native_main_build_id': 'fb08f1d20fd1204fe7070672777f869b',
     'native_main_sha256': 'b3935415499549adaf4c0e89822831daa175cfd456a7990791c79be3997645ef',
     'limits': [
-        'Tests the exact effect-4 gate; downstream native motion, geometry and rendering are not executed.',
+        'Tests effect-4 and effect-5/6/7 visibility hooks and original landing-resource creation/slot dispatch; downstream charge-level, motion, trajectory/collision and rendering are not executed.',
         'No target game, save, Android device or visual run was executed by this regression.',
         'The pure native charging query is simulated from the independently decoded action set in this host test.',
     ],
@@ -76,9 +77,9 @@ try:
     baseline_log.write_bytes(baseline.stdout + baseline.stderr)
     report['logs']['baseline'] = str(baseline_log)
     report['baseline_exit_code'] = baseline.returncode
-    report['baseline_failed_expected'] = baseline.returncode == 1 and b'EXPECTED_BASELINE_CONTRACT_FAILURES=1' in baseline.stdout
+    report['baseline_failed_expected'] = baseline.returncode == 1 and b'EXPECTED_BASELINE_CONTRACT_FAILURES=3' in baseline.stdout
     if not report['baseline_failed_expected']:
-        raise RuntimeError('Unhooked baseline did not fail the expected charge-guide case')
+        raise RuntimeError('Visibility-only baseline did not fail all three missing-resource styles')
 
     fixed = subprocess.run([str(exe)], env=env, cwd=output, capture_output=True, timeout=30)
     fixed_log = output / 'reticle-fixed.log'
@@ -88,6 +89,35 @@ try:
     print(fixed.stdout.decode('utf-8', errors='replace'), end='')
     print(fixed.stderr.decode('utf-8', errors='replace'), end='')
     fixed.check_returncode()
+    contract = subprocess.run([str(exe), '--native-contract'], env=env, cwd=output,
+                              capture_output=True, timeout=30)
+    contract.check_returncode()
+    contract_path = output / 'production-hook-contract.json'
+    json.loads(contract.stdout)
+    contract_path.write_bytes(contract.stdout)
+    contract_log = output / 'production-hook-contract.log'
+    contract_log.write_bytes(contract.stderr)
+    report['logs']['production_hook_contract'] = str(contract_path)
+    report['logs']['production_hook_contract_log'] = str(contract_log)
+    native_report_path = output / 'native-resource-results.json'
+    native = subprocess.run([
+        sys.executable, str(project / 'tests/test_bow_resource_native.py'),
+        '--main', os.environ.get('MHGU_NATIVE_MAIN', 'D:/codex/MHGURecompAndroidBuild/game/exefs/main'),
+        '--contract', str(contract_path), '--output', str(native_report_path),
+    ], env=env, cwd=project, capture_output=True, timeout=120)
+    native_log = output / 'native-resource.log'
+    native_log.write_bytes(native.stdout + native.stderr)
+    report['logs']['native_resource'] = str(native_log)
+    report['logs']['native_resource_report'] = str(native_report_path)
+    print(native.stdout.decode('utf-8', errors='replace'), end='')
+    print(native.stderr.decode('utf-8', errors='replace'), end='')
+    native.check_returncode()
+    native_report = json.loads(native_report_path.read_text(encoding='utf-8'))
+    if not native_report.get('passed'):
+        raise RuntimeError('Original ARM32 resource/dispatch contract did not pass')
+    report['native_resource_passed'] = True
+    report['native_resource_case_count'] = native_report['case_count']
+    report['native_resource_update_count'] = native_report['update_count']
     after = digests()
     report['source_sha256_after'] = after
     report['source_frozen'] = before == after
